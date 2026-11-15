@@ -164,3 +164,29 @@ func TestExampleFile(t *testing.T) {
 		t.Errorf("예시 설정의 내용이 다름: %+v", c)
 	}
 }
+
+func TestToolActionsFor(t *testing.T) {
+	c, err := Load(write(t, "tool_actions:\n  \"Skill:make-*\": [a.one]\n  \"mcp__*__get\": [b.two, a.one]\n  Exact: [c.three]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		keys []string
+		want []string
+	}{
+		{[]string{"Skill:make-flag"}, []string{"a.one"}},
+		{[]string{"Skill:make-"}, []string{"a.one"}},
+		{[]string{"Skill:other"}, nil},
+		{[]string{"mcp__srv__get", "Exact"}, []string{"c.three", "b.two", "a.one"}},
+		{[]string{"mcp__srv__get2"}, nil},
+		{[]string{"Exact2"}, nil},
+	}
+	for _, tt := range tests {
+		if got := c.ToolActionsFor(tt.keys...); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%v: %v, 기대 %v", tt.keys, got, tt.want)
+		}
+	}
+	if !c.ActionVocab()["b.two"] || !c.ActionVocab()["a"] {
+		t.Errorf("tool_actions 의 동작 이름도 어휘에 있어야 함: %v", c.ActionVocab())
+	}
+}
