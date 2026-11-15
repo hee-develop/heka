@@ -4,7 +4,7 @@ heka는 AI 에이전트가 일하는 각 순간에, 그 순간에 필요한 컨�
 
 ## 현재 상태
 
-설계 단계입니다. 구현은 시작 전이며, 지금 동작하는 명령은 `heka version` 하나뿐입니다.
+설계 단계이며 구현은 일부만 있습니다. 항목 파일과 설정을 읽어 검증하고 색인(SQLite)을 만드는 `heka index [--check]`, 순간 하나에 넣을 항목을 골라 JSON 으로 보여 주는 `heka select`, `heka version` 이 동작합니다. 설정 예시는 `config.example.yaml` 입니다. 훅과 MCP 는 아직 없습니다. 데이터 폴더는 `$HEKA_HOME` 이고, 없으면 `$HOME/.heka` 입니다(잠정).
 
 ## 문서
 
@@ -18,7 +18,7 @@ make check   # gofmt, go vet, go test, 푸시 전 검사 훅 시험
 make hooks   # 이 저장소의 git 훅 경로를 .githooks 로 지정
 ```
 
-지금은 Go 표준 라이브러리만 씁니다.
+직접 의존하는 외부 모듈은 둘입니다: 순수 Go SQLite 드라이버 `modernc.org/sqlite` 와 YAML 라이브러리 `go.yaml.in/yaml/v3`. cgo 는 쓰지 않습니다.
 
 ## 푸시 전 검사 훅
 
