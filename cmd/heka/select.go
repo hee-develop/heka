@@ -72,14 +72,8 @@ func selectOnce(m selector.Moment) (selector.Result, error) {
 	if err != nil {
 		return selector.Result{}, err
 	}
-	if index.Stale(home) {
-		fp, items, err := loadItems(home, cfg)
-		if err != nil {
-			return selector.Result{}, err
-		}
-		if _, err := index.Build(home, items, cfg, fp); err != nil {
-			return selector.Result{}, fmt.Errorf("색인을 만들지 못함: %w", err)
-		}
+	if err := index.Ensure(home, cfg); err != nil {
+		return selector.Result{}, err
 	}
 	ix, err := index.Open(home)
 	if err != nil {

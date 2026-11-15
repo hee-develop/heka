@@ -27,6 +27,7 @@ func TestResolveCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	corpusCfg := loadConfig(t, "tool_actions:\n  \"Bash:codegen\": [code.generate]\n")
 	var cases []corpusCase
 	if err := json.Unmarshal(b, &cases); err != nil {
 		t.Fatal(err)
@@ -35,7 +36,7 @@ func TestResolveCorpus(t *testing.T) {
 		t.Fatalf("시험 사례가 %d건뿐임", len(cases))
 	}
 	for _, c := range cases {
-		got := Resolve(Call{Tool: c.Tool, Input: c.Input, Cwd: c.Cwd}, nil)
+		got := Resolve(Call{Tool: c.Tool, Input: c.Input, Cwd: c.Cwd}, corpusCfg)
 		if !reflect.DeepEqual(got, c.Want) {
 			t.Errorf("%s: %s %v (cwd %s)\n got %+v\nwant %+v", c.ID, c.Tool, c.Input, c.Cwd, got, c.Want)
 		}
@@ -115,5 +116,35 @@ func TestRmDependsOnCwd(t *testing.T) {
 	}
 	if got := rm("", "rm -rf build"); !reflect.DeepEqual(got, []string{"bash.other"}) {
 		t.Errorf("cwd 가 없으면 상대 경로는 풀지 않음: %v", got)
+	}
+}
+
+// Bash:<명령 이름> 키는 구간마다 앞말을 벗긴 첫 단어와 npx·run 뒤의 이름을 견준다.
+func TestBashToolActions(t *testing.T) {
+	cfg := loadConfig(t, "tool_actions:\n  \"Bash:gen\": [code.generate]\n  \"Bash:lint*\": [code.lint]\n")
+	tests := []struct {
+		cmd  string
+		want []string
+	}{
+		{"gen a", []string{"code.generate"}},
+		{"sudo env X=1 gen a", []string{"code.generate"}},
+		{"/usr/bin/gen a", []string{"code.generate"}},
+		{"npx -y gen a", []string{"code.generate"}},
+		{"npm run gen", []string{"code.generate"}},
+		{"pnpm run gen", []string{"code.generate"}},
+		{"yarn gen", []string{"code.generate"}},
+		{"npm gen", []string{"bash.other"}}, // npm 은 run 없이는 스크립트가 아니다
+		{"echo gen", []string{"bash.other"}},
+		{"git commit -m x && gen", []string{"git.commit", "code.generate"}},
+		{"gen && lint-all", []string{"code.generate", "code.lint"}},
+	}
+	for _, tt := range tests {
+		got := Resolve(Call{Tool: "Bash", Input: map[string]any{"command": tt.cmd}}, cfg).Actions
+		if !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%q: %v, 기대 %v", tt.cmd, got, tt.want)
+		}
+	}
+	if got := Resolve(Call{Tool: "Bash", Input: map[string]any{"command": "npm run codegen x"}}, nil).Actions; !reflect.DeepEqual(got, []string{"bash.other"}) {
+		t.Errorf("설정이 없으면 codegen 도 특별하지 않음: %v", got)
 	}
 }

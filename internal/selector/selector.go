@@ -38,10 +38,12 @@ type Moment struct {
 
 // Injection 은 넣을 항목이다. Why 는 무엇이 맞아서 넣었는지 한 줄이다.
 type Injection struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
-	Must bool   `json:"must"`
-	Why  string `json:"why"`
+	ID      string `json:"id"`
+	Text    string `json:"text"`
+	Must    bool   `json:"must"`
+	Why     string `json:"why"`
+	Confirm string `json:"confirm"` // false|true|always
+	Hash    string `json:"hash"`    // 항목의 내용 해시
 }
 
 // Drop 은 탈락한 항목이다. Stage 는 범위|자격|일치|중복|예산|판정 이다.
@@ -51,11 +53,13 @@ type Drop struct {
 	Reason string `json:"reason"`
 }
 
-// Result 는 선별 결과다. Asked 는 프롬프트가 시킨 동작이다.
+// Result 는 선별 결과다. Asked 는 프롬프트가 시킨 동작이고,
+// Refused 는 프롬프트에 동작 표현이 있었지만 모든 자리가 부정·질문·조건으로 버려진 동작이다.
 type Result struct {
 	Injections []Injection `json:"injections"`
 	Drops      []Drop      `json:"drops"`
 	Asked      []string    `json:"asked"`
+	Refused    []string    `json:"refused"`
 }
 
 type cand struct {
@@ -74,6 +78,7 @@ type sel struct {
 	cands  []*cand
 	drops  []Drop
 	asked  []string
+	refuse []string
 }
 
 // Select 는 순간 하나에 넣을 항목을 고른다.
@@ -105,13 +110,16 @@ func Select(ctx context.Context, ix *index.Index, cfg *config.Config, m Moment) 
 	if err != nil {
 		return Result{}, err
 	}
-	res := Result{Injections: []Injection{}, Drops: s.drops, Asked: s.asked}
+	res := Result{Injections: []Injection{}, Drops: s.drops, Asked: s.asked, Refused: s.refuse}
 	s.fit(&res)
 	if res.Drops == nil {
 		res.Drops = []Drop{}
 	}
 	if res.Asked == nil {
 		res.Asked = []string{}
+	}
+	if res.Refused == nil {
+		res.Refused = []string{}
 	}
 	return res, nil
 }
@@ -156,11 +164,11 @@ func (s *sel) subagent() error {
 }
 
 func (s *sel) prompt() error {
-	asked, err := s.askedActions()
+	asked, refused, err := s.askedActions()
 	if err != nil {
 		return err
 	}
-	s.asked = asked
+	s.asked, s.refuse = asked, refused
 	for _, a := range asked {
 		ids, err := s.ix.ByAction(a)
 		if err != nil {
@@ -181,25 +189,27 @@ func (s *sel) prompt() error {
 
 // askedActions 는 동작 낱말 사전으로 프롬프트가 시킨 동작을 찾는다.
 // 표현이 맞은 자리마다 맞은 글과 그 뒤 negation_window 글자 안에 부정·질문·조건이 있으면 그 자리는 버린다.
-func (s *sel) askedActions() ([]string, error) {
+// 표현이 있었지만 모든 자리가 버려진 동작은 refused 로 따로 돌려준다.
+func (s *sel) askedActions() (asked, refused []string, err error) {
 	var negs []*regexp.Regexp
 	for _, n := range s.cfg.Negations {
 		re, err := regexp.Compile(n)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		negs = append(negs, re)
 	}
 	text := strings.ToLower(s.m.Text)
-	var out []string
 	for _, a := range slices.Sorted(maps.Keys(s.cfg.Actions)) {
+		hit, ok := false, false
 	phrases:
 		for _, p := range s.cfg.Actions[a].Phrases {
 			re, err := regexp.Compile(p)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			for _, loc := range re.FindAllStringIndex(text, -1) {
+				hit = true
 				end := loc[1]
 				for n := 0; n < s.cfg.NegationWindow && end < len(text); n++ {
 					_, w := utf8.DecodeRuneInString(text[end:])
@@ -207,13 +217,19 @@ func (s *sel) askedActions() ([]string, error) {
 				}
 				seg := text[loc[0]:end]
 				if !slices.ContainsFunc(negs, func(n *regexp.Regexp) bool { return n.MatchString(seg) }) {
-					out = append(out, a)
+					ok = true
 					break phrases
 				}
 			}
 		}
+		switch {
+		case ok:
+			asked = append(asked, a)
+		case hit:
+			refused = append(refused, a)
+		}
 	}
-	return out, nil
+	return asked, refused, nil
 }
 
 // topic 은 주제 갈래다. 동작 조건이 없는 항목 가운데 주제어가 맞은 것과 낱말 순위 상위 후보를 모델에 물어 고른다.
@@ -349,7 +365,9 @@ func (s *sel) admitRec(r *index.Record, match func(*index.Record) string) *cand 
 	}
 	s.got[r.ID] = true
 	stage, reason, must := s.check(r, match)
-	if stage == "" && s.m.Seen[r.ID] {
+	// 도구 순간의 확인 항목은 이미 넣었어도 남긴다. 허용이 거둬졌거나 always 면 다시 확인을 요구해야 해서다.
+	// 글을 또 넣을지는 연결부가 정한다.
+	if stage == "" && s.m.Seen[r.ID] && !(s.m.Kind == "tool" && r.Confirm != "" && r.Confirm != "false") {
 		stage, reason = "중복", "이 세션에 이미 넣음"
 	}
 	if stage != "" {
@@ -453,7 +471,7 @@ func (s *sel) fit(res *Result) {
 	}
 	for i, c := range s.cands {
 		if keep[i] {
-			res.Injections = append(res.Injections, Injection{c.r.ID, texts[i], c.must, c.why})
+			res.Injections = append(res.Injections, Injection{c.r.ID, texts[i], c.must, c.why, c.r.Confirm, c.r.Hash})
 		}
 	}
 }
