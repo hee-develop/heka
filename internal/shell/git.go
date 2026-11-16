@@ -34,3 +34,26 @@ func GitSubcommand(words []string) (sub string, rest []string, ok bool) {
 	}
 	return words[i], words[i+1:], true
 }
+
+// GitDirs 는 words(StripPrefix 를 거친 것)가 git 명령이면 하위 명령 앞의 `-C <경로>` 값을 나온 순서대로 돌려준다.
+// 상대 경로는 앞의 -C 가 가리킨 디렉터리 기준이다(git 이 그렇게 처리한다).
+func GitDirs(words []string) []string {
+	if len(words) == 0 || path.Base(words[0]) != "git" {
+		return nil
+	}
+	var dirs []string
+	i := 1
+	for i < len(words) && strings.HasPrefix(words[i], "-") && words[i] != "-" {
+		if words[i] == "--" {
+			break
+		}
+		if words[i] == "-C" && i+1 < len(words) {
+			dirs = append(dirs, words[i+1])
+		}
+		if gitGlobalValueOpts[words[i]] {
+			i++
+		}
+		i++
+	}
+	return dirs
+}

@@ -83,6 +83,9 @@ func whyLine(r ledger.Row) string {
 		var cs []string
 		for _, c := range r.Checks {
 			t := c.ID + " " + c.Target + " " + c.Result
+			if c.Note != "" {
+				t += "(" + oneLine(c.Note) + ")"
+			}
 			if c.Blocked {
 				t += "(막음)"
 			}

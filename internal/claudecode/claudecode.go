@@ -20,6 +20,7 @@ import (
 	"github.com/hee-develop/heka/internal/ledger"
 	"github.com/hee-develop/heka/internal/selector"
 	"github.com/hee-develop/heka/internal/session"
+	"github.com/hee-develop/heka/internal/shell"
 )
 
 // 처리 전체의 시간 상한이다. 프롬프트와 SubagentStart 는 판정 명령을 부를 수 있어 길다.
@@ -565,11 +566,19 @@ func (h *handler) toolChecks(ctx context.Context, actions, paths []string) (deni
 	if len(cands) == 0 {
 		return nil, nil, nil
 	}
-	targets := check.Targets(h.in.ToolName, h.toolInput())
+	home, _ := os.UserHomeDir()
+	targets, notes := check.Extract(h.in.ToolName, h.toolInput(), shell.Files{Cwd: h.in.Cwd, Home: home, Read: check.ReadFile})
 	for _, c := range cands {
 		result, why := check.Eval(c.Check, targets[c.Check.Target])
 		blocked := result == check.Fail && c.Check.Mode == "block"
-		h.row.Checks = append(h.row.Checks, ledger.Checked{ID: c.ID, Target: c.Check.Target, Result: result, Blocked: blocked})
+		note := ""
+		if result == check.Skip {
+			note = why
+			if n := notes[c.Check.Target]; n != "" && len(targets[c.Check.Target]) == 0 {
+				note = n // 글을 뽑지 못한 구체적인 이유
+			}
+		}
+		h.row.Checks = append(h.row.Checks, ledger.Checked{ID: c.ID, Target: c.Check.Target, Result: result, Blocked: blocked, Note: note})
 		if blocked {
 			denied = append(denied, c.ID)
 			reasons = append(reasons, check.Line(c.ID, c.Text, why))
@@ -606,7 +615,11 @@ func (h *handler) stop(ctx context.Context) error {
 			texts = []string{h.in.LastAssistantMessage}
 		}
 		result, why := check.Eval(c.Check, texts)
-		h.row.Checks = append(h.row.Checks, ledger.Checked{ID: c.ID, Target: c.Check.Target, Result: result})
+		note := ""
+		if result == check.Skip {
+			note = why
+		}
+		h.row.Checks = append(h.row.Checks, ledger.Checked{ID: c.ID, Target: c.Check.Target, Result: result, Note: note})
 		if result == check.Fail && c.Check.Mode == "block" {
 			fails = append(fails, failed{c, why})
 			failIDs = append(failIDs, c.ID)

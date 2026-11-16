@@ -53,11 +53,13 @@ check:
 ```
 
 - 정규식은 Go 표준 문법(`regexp`)입니다. `pattern` 은 맞아야, `not_pattern` 은 맞지 않아야 통과합니다.
-- `command`, `commit_message`, `pr_body` 는 도구 호출 직전(`PreToolUse`)에 Bash 명령에서 뽑아 견줍니다. 검사할 항목은 그 호출의 동작과 `when` 이 맞고 범위·자격을 통과한 것이며, 이미 넣은 항목이어도 매번 검사합니다. 커밋 메시지는 `git commit` 의 `-m`(여럿이면 빈 줄로 이음), `-F -` 와 heredoc, `--amend -m` 에서, PR 본문은 `gh pr create|edit` 의 `--body`·`-b`, `--body-file -` 와 heredoc, `gh api … -f body=…` 에서 뽑습니다. 파일로 넘겨서 뽑을 수 없으면 그 검사는 하지 않고(원장에 `skip`) 통과시킵니다.
+- `command`, `commit_message`, `pr_body` 는 도구 호출 직전(`PreToolUse`)에 Bash 명령에서 뽑아 견줍니다. 검사할 항목은 그 호출의 동작과 `when` 이 맞고 범위·자격을 통과한 것이며, 이미 넣은 항목이어도 매번 검사합니다. 커밋 메시지는 `git commit` 의 `-m`(여럿이면 빈 줄로 이음), `-F -` 와 heredoc, `--amend -m` 에서, PR 본문은 `gh pr create|edit` 의 `--body`·`-b`, `--body-file -` 와 heredoc, `gh api … -f body=…` 에서 뽑습니다.
+  - 파일로 넘긴 글(`git commit -F|--file <경로>`, `gh pr create|edit --body-file|-F <경로>`, `gh api … -F body=@<경로>`)도 풉니다. 경로 단어의 `$이름`·`${이름}` 은 같은 명령 안에서 앞서 나온 `이름=값` 대입(값이 글자 그대로일 때만. 환경 변수는 보지 않습니다)으로 풀고, `~/` 는 홈으로, 상대 경로는 훅 입력의 `cwd`(앞에 `cd <경로>` 가 있으면 그 디렉터리, `git -C <경로>` 가 붙은 commit 은 그 경로)를 기준으로 합니다. 같은 명령이 `cat > 경로 <<'EOF' … EOF` 로 그 파일을 쓰면 그 heredoc 본문이 값이고, 그렇지 않으면 파일을 읽습니다(보통 파일, 256KiB 이하, UTF-8 만. 읽기만 하고 어떤 명령도 실행하지 않습니다). 다른 구간이 그 경로나 변수를 앞서 언급하면(다른 명령의 인자, 리다이렉션 대상 등) 실제로 보낼 내용을 알 수 없으므로 뽑지 않습니다.
+  - 글을 뽑지 못하면 그 검사는 하지 않고(원장에 `skip` 과 이유) 통과시킵니다.
 - `mode: block` 이고 걸리면 `permissionDecision: "deny"` 로 막고, 사유에 그 항목의 글과 걸린 검사의 대상을 적어 모델이 고쳐서 다시 시도하게 합니다. 여러 항목이 걸리면 사유를 줄바꿈으로 이어 한 번에 냅니다. 같은 호출에 넣을 다른 항목은 `additionalContext` 로 함께 갑니다. 사람에게 묻지는 않습니다. `mode: log` 는 막지 않고 원장에만 남깁니다.
 - `last_message` 는 턴이 끝날 때(`Stop`) 입력의 `last_assistant_message` 를 견줍니다. 이 검사의 항목은 범위·자격을 통과해야 하고, `when` 은 `repo`·`agent` 만 봅니다. 걸리면 `{"decision": "block", "reason": …}` 로 모델이 한 번 더 돌게 합니다. 세션당 3회까지만이고, 같은 항목이 연속으로 걸리면 두 번까지만 막으며, 그 뒤에는 원장에만 남깁니다.
 - 식이 틀렸거나 글을 뽑다가 오류가 나면 통과시킵니다. 검사 때문에 막는 것은 위의 두 출력뿐이고, 훅이 실패해도 작업을 막지 않는다는 원칙은 그대로입니다.
-- 원장 줄의 `checks` 에 항목 id, 대상, 결과(`pass`·`fail`·`skip`), 막았는지가 남습니다. `heka stats` 는 "검사에 걸린 횟수"를, `heka list --violated N` 은 검사에 걸린 횟수와 `flag` 횟수의 합이 N 이상인 항목을 보입니다.
+- 원장 줄의 `checks` 에 항목 id, 대상, 결과(`pass`·`fail`·`skip`), 막았는지가 남습니다. `skip` 에는 이유 `note`(`대상 없음`, `변수를 풀지 못함`, `경로를 풀지 못함`, `같은 명령에서 파일을 고침`, `파일을 읽지 못함`, `식을 쓸 수 없음` 중 하나)가 붙고, 파일의 경로나 내용은 남기지 않습니다. `heka why` 는 이 이유를 `skip(이유)` 로 보입니다. `heka stats` 는 "검사에 걸린 횟수"를, `heka list --violated N` 은 검사에 걸린 횟수와 `flag` 횟수의 합이 N 이상인 항목을 보입니다.
 
 ## 그림자 방식
 

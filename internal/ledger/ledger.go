@@ -34,13 +34,16 @@ type Dropped struct {
 }
 
 // Checked 는 결과물 검사 하나의 결과다. Result 는 pass|fail|skip 이고,
-// skip 은 검사할 글을 뽑지 못했거나 식을 쓸 수 없어 판정하지 않았다는 뜻이다.
+// skip 은 검사할 글을 뽑지 못했거나 식을 쓸 수 없어 판정하지 않았다는 뜻이고, Note 에 그 이유를 짧게 남긴다
+// (대상 없음, 변수를 풀지 못함, 경로를 풀지 못함, 같은 명령에서 파일을 고침, 파일을 읽지 못함, 식을 쓸 수 없음).
+// 파일의 내용이나 경로는 남기지 않는다.
 // Blocked 는 막는 판정이 났는가(그림자 방식에서는 실제로 막지는 않았지만 막았을 판정을 뜻한다).
 type Checked struct {
 	ID      string `json:"id"`
 	Target  string `json:"target"`
 	Result  string `json:"result"`
 	Blocked bool   `json:"blocked"`
+	Note    string `json:"note,omitempty"`
 }
 
 // Judged 는 판정 명령을 한 번 부른 기록이다. MS 는 걸린 시간(밀리초)이고,

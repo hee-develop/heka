@@ -30,7 +30,7 @@ func checkHome(t *testing.T) string {
 	rows := `{"ts":"2026-11-02T01:00:00.000Z","session":"s1","event":"PreToolUse","moment":"tool","actions":["git.commit"],"injected":[],"dropped":[],"checks":[{"id":"fmt-a","target":"commit_message","result":"fail","blocked":true}]}
 {"ts":"2026-11-02T02:00:00.000Z","session":"s1","event":"PreToolUse","moment":"tool","actions":["git.commit"],"injected":[],"dropped":[],"checks":[{"id":"fmt-a","target":"commit_message","result":"pass","blocked":false}]}
 {"ts":"2026-11-02T03:00:00.000Z","session":"s1","event":"PreToolUse","moment":"tool","actions":["git.commit"],"injected":[],"dropped":[],"checks":[{"id":"fmt-a","target":"commit_message","result":"fail","blocked":true}],"shadow":true}
-{"ts":"2026-11-02T04:00:00.000Z","session":"s1","event":"Stop","moment":"stop","actions":[],"injected":[],"dropped":[],"checks":[{"id":"fmt-b","target":"last_message","result":"fail","blocked":false},{"id":"fmt-a","target":"commit_message","result":"skip","blocked":false}]}
+{"ts":"2026-11-02T04:00:00.000Z","session":"s1","event":"Stop","moment":"stop","actions":[],"injected":[],"dropped":[],"checks":[{"id":"fmt-b","target":"last_message","result":"fail","blocked":false},{"id":"fmt-a","target":"commit_message","result":"skip","blocked":false,"note":"변수를 풀지 못함"}]}
 {"ts":"2026-11-03T03:00:00.000Z","session":"s1","event":"flag","moment":"flag","actions":[],"injected":[{"id":"fmt-b","hash":"h","why":"사유"}],"dropped":[]}
 `
 	p := filepath.Join(home, "ledger", "2026-11.jsonl")
@@ -110,7 +110,7 @@ func TestWhyShowsChecksAndShadow(t *testing.T) {
 	if !strings.HasSuffix(lines[2], "(그림자)") {
 		t.Errorf("그림자 줄: %s", lines[2])
 	}
-	if !strings.Contains(lines[3], "fmt-b last_message fail; fmt-a commit_message skip") {
+	if !strings.Contains(lines[3], "fmt-b last_message fail; fmt-a commit_message skip(변수를 풀지 못함)") {
 		t.Errorf("Stop 줄: %s", lines[3])
 	}
 }
