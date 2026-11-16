@@ -61,6 +61,16 @@ type Result struct {
 	Drops      []Drop      `json:"drops"`
 	Asked      []string    `json:"asked"`
 	Refused    []string    `json:"refused"`
+	Judges     []Judged    `json:"judges,omitempty"` // 판정 명령을 부른 기록(호출마다 한 건)
+}
+
+// Judged 는 판정 명령을 한 번 부른 기록이다. MS 는 걸린 시간(밀리초)이다.
+type Judged struct {
+	ID      string `json:"id"`
+	Inject  bool   `json:"inject"`
+	MS      int64  `json:"ms"`
+	Error   bool   `json:"error,omitempty"`   // 시간 초과를 포함해 답을 얻지 못함
+	Timeout bool   `json:"timeout,omitempty"` // 그중 시간 안에 끝나지 않음
 }
 
 type cand struct {
@@ -80,6 +90,7 @@ type sel struct {
 	drops  []Drop
 	asked  []string
 	refuse []string
+	judges []Judged
 }
 
 // Select 는 순간 하나에 넣을 항목을 고른다. 예산까지 적용한 결과다.
@@ -115,7 +126,7 @@ func Gather(ctx context.Context, ix *index.Index, cfg *config.Config, m Moment) 
 	if err != nil {
 		return Result{}, err
 	}
-	res := Result{Injections: []Injection{}, Drops: s.drops, Asked: s.asked, Refused: s.refuse}
+	res := Result{Injections: []Injection{}, Drops: s.drops, Asked: s.asked, Refused: s.refuse, Judges: s.judges}
 	for _, c := range s.cands {
 		res.Injections = append(res.Injections, Injection{c.r.ID, strings.TrimSpace(c.r.Text), c.must, c.why, c.r.Confirm, c.r.Hash, c.r.CheckJSON})
 	}
@@ -304,34 +315,32 @@ func (s *sel) topic() error {
 		}
 		return nil
 	}
-	type answer struct {
-		inject bool
-		reason string
-		err    error
-	}
-	ans := make([]answer, len(cands))
+	ans := make([]judge.Outcome, len(cands))
 	var wg sync.WaitGroup
 	for i, c := range cands {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			it := judge.Item{ID: c.r.ID, Text: c.r.Text, About: c.r.About}
-			ans[i].inject, ans[i].reason, ans[i].err = judge.Ask(s.ctx, s.cfg.Judge, s.m.Text, it)
+			ans[i] = judge.AskTimed(s.ctx, s.cfg.Judge, s.m.Text, it)
 		}()
 	}
 	wg.Wait()
 	kept := 0
 	for i, c := range cands {
+		for _, k := range ans[i].Calls {
+			s.judges = append(s.judges, Judged{ID: c.r.ID, Inject: k.Inject, MS: k.MS, Error: k.Error, Timeout: k.Timeout})
+		}
 		switch a := ans[i]; {
-		case a.err != nil:
-			s.drop(c.r.ID, "판정", "판정 오류: "+a.err.Error())
-		case !a.inject:
-			s.drop(c.r.ID, "판정", "넣지 않음: "+a.reason)
+		case a.Err != nil:
+			s.drop(c.r.ID, "판정", "판정 오류: "+a.Err.Error())
+		case !a.Inject:
+			s.drop(c.r.ID, "판정", "넣지 않음: "+a.Reason)
 		case kept >= topicMax:
 			s.drop(c.r.ID, "예산", fmt.Sprintf("참고 항목은 한 번에 최대 %d건", topicMax))
 		default:
 			kept++
-			c.why += ", 판정: " + a.reason
+			c.why += ", 판정: " + a.Reason
 			s.cands = append(s.cands, c)
 		}
 	}

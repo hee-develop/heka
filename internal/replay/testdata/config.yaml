@@ -1,0 +1,16 @@
+# 재현 시험용 설정. 이름은 모두 지어낸 것이다.
+scopes:
+  repo/sample-app: [team/sample]
+  team/sample: [personal]
+global_scopes: [personal]
+claude_code:
+  tool_prompt_prefixes: ["<task-notification"]
+actions:
+  git.write: {}
+  doc.edit: {}
+  git.push:
+    in: git.write
+    phrases: ['(?:푸[시쉬]|push)\s*(?:을|를)?\s*(?:해|하고|하지\s*(?:마|말))']
+  git.push.force:
+    phrases: ['force[- ]?push|강제\s*푸[시쉬]']
+negations: ['하지\s*(?:마|말)']

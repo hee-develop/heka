@@ -12,6 +12,8 @@ heka는 AI 에이전트가 일하는 각 순간에, 그 순간에 필요한 컨�
 - `heka find`: 항목을 찾습니다(낱말 나열도, 작업을 설명한 문장도 됩니다).
 - `heka add`, `heka pending`: 항목을 등록하고, 비슷한 항목이 있어 대기함에 든 것을 결정합니다.
 - `heka why`, `heka list`, `heka stats`, `heka retire`: 원장과 항목을 들여다보고 항목을 은퇴시킵니다(아래 "원장과 항목 보기").
+- `heka judge-stats`: 원장에 남은 판정 시간을 모아 분포와 상한별로 잘릴 판정 수를 보입니다.
+- `heka replay`: 기록해 둔 순간들을 선별기에 다시 넣어 전달·정밀도·침묵을 잽니다(아래 "재현: heka replay").
 - `heka mcp`: 조회·등록·표시를 위한 MCP 서버입니다(표준 입출력).
 - `heka hook`: Claude Code 훅 연결부입니다. 표준 입력의 훅 JSON 을 처리해 표준 출력에 JSON 을 냅니다. `--print-settings` 는 설정 파일의 `hooks` 에 넣을 JSON 조각을 출력하며(`--shadow` 를 더하면 그림자 방식용), 설정 파일을 직접 고치지는 않습니다.
 - `heka version`
@@ -73,7 +75,7 @@ heka hook --print-settings --shadow   # 명령이 `HEKA_SHADOW=1 heka hook` 이�
 heka find [--scope S]... [--budget N] [--limit K] [--json] <질의…>
 ```
 
-모델 판정을 부르지 않고, 동작 조건이 붙은 항목도 대상에 넣습니다. 후보는 주제어(`about`)가 질의에 든 항목과 낱말 점수 상위 K건(기본 10, 점수 > 0)이고, 범위·자격(기한, 미확인 ai 등)은 프롬프트 선별과 같은 규칙으로 거릅니다. 순서는 주제어로 걸린 것이 먼저, 그다음 낱말 점수 내림차순, 같으면 id 오름차순입니다. 범위는 `--scope` 로 주고, 없으면 현재 작업 폴더를 설정의 `locations` 로 찾아 정합니다(`global_scopes` 는 늘 포함).
+모델 판정을 부르지 않고, 동작 조건이 붙은 항목도 대상에 넣습니다. 후보는 주제어(`about`)가 질의에 든 항목과 낱말 점수 상위 K건(기본 5, 점수 > 0)이고, 범위·자격(기한, 미확인 ai 등)은 프롬프트 선별과 같은 규칙으로 거릅니다. 순서는 주제어로 걸린 것이 먼저, 그다음 낱말 점수 내림차순, 같으면 id 오름차순입니다. 범위는 `--scope` 로 주고, 없으면 현재 작업 폴더를 설정의 `locations` 로 찾아 정합니다(`global_scopes` 는 늘 포함).
 
 토큰 상한은 `--budget`, 없으면 설정의 `budgets.find`(기본 1500)입니다. 순서대로 넣다가 안 들어가는 항목은 본문을 빼고 주입문만으로 다시 시도하고(`body_omitted: true`), 그래도 안 들어가면 빠진 목록에 넣습니다. 조회는 원장에 한 줄(`event: find`) 남습니다.
 
@@ -131,15 +133,54 @@ heka pending drop <대기 id>                   # 대기함에서 지움
 
 ```sh
 heka why [--session <id>] [--last N] [--id <항목 id>] [--json]
+heka judge-stats [--json] [--since YYYY-MM-DD]
 heka list [--json] [--agent <종류>] [--must] [--flagged] [--violated N]
 heka stats <id> [--json]
 heka retire <id> --reason <글>
 ```
 
-- `why`: 최근 줄(기본 20)을 한 줄씩 보입니다. 시각(UTC), 이벤트, 동작, 넣은 항목과 이유, 빠진 항목(`id[단계: 사유]`), 토큰. `--id` 를 주면 그 항목이 넣어졌거나 빠진 줄만 봅니다. `--json` 은 원장 줄을 JSON 배열로 냅니다.
+- `why`: 최근 줄(기본 20)을 한 줄씩 보입니다. 시각(UTC), 이벤트, 동작, 넣은 항목과 이유, 빠진 항목(`id[단계: 사유]`), 판정(`판정: <id> 넣음 1234ms`. 안 넣음·오류·시간 초과도 같은 꼴), 토큰. `--id` 를 주면 그 항목이 넣어졌거나 빠진 줄만 봅니다. `--json` 은 원장 줄을 JSON 배열로 냅니다.
+- `judge-stats`: 프롬프트·서브에이전트 시작의 주제 갈래가 판정 명령을 부를 때마다 원장 줄의 `judges` 에 항목 id, 답(`inject`), 걸린 시간(`ms`), 오류(`error`)와 시간 초과(`timeout`)가 남습니다(`votes: 2` 면 호출마다 한 건). 이 명령은 그 기록을 모아 판정 수, 걸린 시간의 중앙값·95%·최댓값, 그리고 판정 시간 상한을 3·4·5·6·8·10·15초로 줄였다면 잘렸을 판정(걸린 시간이 상한을 넘은 것)의 수와 그중 넣으라는 답의 수를 표로 보입니다. 시간 초과·오류로 끝난 호출은 답이 없어 넣으라는 답에 세지 않습니다. `--since` 는 그 날짜(UTC) 이후의 줄만 셉니다.
 - `list`: 항목의 id, 필수 여부, 조건(`when`), 범위, 확인 날짜, 기한. `--agent` 는 `when.agent` 에 그 종류가 걸린 항목, `--flagged` 는 원장에 `flag` 가 남은 항목만, `--violated N` 은 검사에 걸린 횟수와 `flag` 횟수의 합이 N 이상인 항목만 보입니다. 검증에 실패한 항목은 빼고 알립니다.
 - `stats`: 주입 횟수, 마지막 주입 시각, 예산·중복·판정으로 빠진 횟수, 결과물 검사에 걸린 횟수, `flag` 횟수와 마지막 사유. 훅의 줄만 셉니다(조회·등록 줄은 세지 않습니다).
 - `retire`: 항목 파일을 지우고 색인을 다시 만들고 원장에 `retire` 한 줄(사유 포함)을 남깁니다. `$HEKA_HOME` 에 `.git` 이 있으면 사유를 메시지로 커밋을 시도하며, 실패해도 성공입니다.
+
+## 재현: heka replay
+
+```sh
+heka replay <사례.jsonl> [--runs N] [--parallel N] [--no-judge] [--json] [--out <파일>] \
+  [--min-delivery X] [--min-precision X] [--min-silence X]
+```
+
+기록해 둔 순간들을 선별기에 다시 넣어 성공 조건을 재는 명령입니다. 실사용 경로(훅)와 무관하고 세션 상태와 원장을 쓰지 않습니다(색인이 낡았으면 다시 만들 뿐입니다). 사례마다 세션은 새로 시작한 것으로 봅니다(이미 넣은 항목 없음).
+
+입력은 사례가 한 줄에 하나씩 든 JSONL 입니다. 깨진 줄, `id` 가 없거나 겹치는 줄, 모르는 `moment.kind` 의 줄은 건너뛰고 그 수를 알립니다. 모르는 키는 무시합니다.
+
+```json
+{"id":"c1","moment":{"kind":"prompt","text":"푸시해 줘","scope":["repo/sample-app"],"repo":"sample-app"},"expect":{"inject":["no-force-push"],"not_inject":[],"silent":false}}
+{"id":"c2","moment":{"kind":"tool","tool":{"name":"Bash","input":{"command":"git push --force"}},"scope":["repo/sample-app"],"repo":"sample-app"},"expect":{"inject":["no-force-push"]}}
+{"id":"c3","moment":{"kind":"prompt","text":"오늘 날씨 어때"},"expect":{"silent":true}}
+```
+
+- `moment.kind`: `prompt`, `tool`, `session_start`, `subagent_start`. 범위는 `scope` 와 `scopes` 둘 다 받고(문자열 하나도 됩니다), 설정의 `claude_code.scopes` 가 더해집니다. `tool` 은 `tool`(이름과 입력)을 주면 `internal/action` 으로 동작을 해석하고, `action` 을 직접 줘도 됩니다. `agent`, `path`, `repo`, `cwd` 도 받습니다. 프롬프트가 `claude_code.tool_prompt_prefixes` 로 시작하면 도구가 만든 것으로 보고 건너뜁니다.
+- `expect`: `inject`(넣어야 하는 항목), `not_inject`(넣으면 안 되는 항목), `silent`(아무것도 넣으면 안 됨), 덧붙인 정답 `also_inject`·`also_not_inject`, 모르는 것으로 세는 `unsure`.
+- 사례에 `confirmed`(bool)와 `source` 가 있으면 그 값별로 묶음을 나눠 셉니다.
+
+재는 것입니다.
+
+- 전달: `inject` 가 있는 사례 가운데 그 항목이 모두 들어간 비율. 필수(`must`) 항목이 대상인 사례와 전체를 나눠서 냅니다.
+- 정밀도: 넣은 (사례, 항목) 쌍 가운데 맞은 비율. 맞음은 `inject`·`also_inject` 에 있는 것, 틀림은 `not_inject`·`also_not_inject` 에 있거나 `silent` 사례에서 넣은 것입니다. 정답이 없는 쌍과 `unsure` 는 분모에 넣지 않고 따로 셉니다.
+- 침묵: `silent` 사례 가운데 아무것도 안 넣은 비율.
+- 걸린 시간(사례당 중앙값·95%·최댓값, 판정을 불렀던 사례와 아닌 사례를 나눠서)과 넣은 글의 토큰(사례당 평균·최댓값).
+
+`--runs N`(기본 1)은 전체를 N 번 돌립니다. 판정 명령이 있으면 회차마다 답이 달라질 수 있어, 조건별 점수를 회차별로 내고 합격 여부는 가장 낮은 회차로 봅니다. `--no-judge` 는 판정 명령을 쓰지 않아 참고 항목(주제 갈래)은 프롬프트에서 넣지 않습니다. `--parallel N`(기본 4)은 사례를 동시에 돌립니다. `--json` 은 같은 내용을 JSON 으로, `--out <파일>` 은 사례별 결과(넣은 항목과 이유, 탈락과 사유, 빠진·틀린·모르는·정답 없는 항목, 맞았는지)를 회차마다 JSONL 로 씁니다.
+
+`--min-delivery`, `--min-precision`, `--min-silence`(0~1)를 주면 가장 낮은 회차가 그 값에 못 미칠 때 종료 코드 1 로 끝납니다(`--min-delivery` 는 전체와 필수 대상 모두에 적용). 주지 않으면 재기만 하고 0 입니다. 잴 사례가 없는 조건은 판정하지 않고 알립니다. 시험용 사례와 항목은 `internal/replay/testdata/` 에 있습니다(`config.yaml`, `items/`, `cases.jsonl`).
+
+```sh
+mkdir -p /tmp/heka-replay && cp -r internal/replay/testdata/items /tmp/heka-replay/ && cp internal/replay/testdata/config.yaml /tmp/heka-replay/
+HEKA_HOME=/tmp/heka-replay heka replay internal/replay/testdata/cases.jsonl --no-judge --min-silence 1
+```
 
 ## MCP 서버: heka mcp
 

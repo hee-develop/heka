@@ -108,3 +108,27 @@ func TestAskNoCommand(t *testing.T) {
 		t.Error("명령이 없으면 오류여야 함")
 	}
 }
+
+func TestAskTimedCalls(t *testing.T) {
+	j := cmd(t, `cat >/dev/null; echo '{"inject": true, "reason": "r"}'`)
+	j.Votes = 2
+	o := AskTimed(context.Background(), j, "p", sample)
+	if o.Err != nil || !o.Inject || len(o.Calls) != 2 {
+		t.Fatalf("%+v", o)
+	}
+	for _, c := range o.Calls {
+		if !c.Inject || c.MS <= 0 || c.Error || c.Timeout {
+			t.Errorf("호출 기록 = %+v", c)
+		}
+	}
+	slow := cmd(t, "sleep 5")
+	slow.Timeout = 200 * time.Millisecond
+	o = AskTimed(context.Background(), slow, "p", sample)
+	if o.Err == nil || len(o.Calls) != 1 || !o.Calls[0].Error || !o.Calls[0].Timeout || o.Calls[0].MS < 200 {
+		t.Errorf("시간 초과 = %+v", o)
+	}
+	o = AskTimed(context.Background(), cmd(t, "cat >/dev/null; exit 3"), "p", sample)
+	if o.Err == nil || len(o.Calls) != 1 || !o.Calls[0].Error || o.Calls[0].Timeout {
+		t.Errorf("오류 = %+v", o)
+	}
+}

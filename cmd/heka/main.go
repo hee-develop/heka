@@ -22,6 +22,8 @@ const usage = `사용법: heka <명령>
   why       원장의 최근 주입을 사람이 읽는 꼴로 보인다 (--session, --last, --id, --json)
   list      항목 목록 (--json, --agent, --must, --flagged, --violated)
   stats     항목 하나의 주입·탈락·검사에 걸림·flag 횟수 (--json)
+  judge-stats  원장의 판정 시간 분포와 상한별로 잘릴 판정 수 (--json, --since YYYY-MM-DD)
+  replay    기록해 둔 순간들을 선별기에 다시 넣어 전달·정밀도·침묵을 잰다 (--runs, --no-judge, --parallel, --json, --out, --min-*)
   retire    항목을 지우고 색인과 원장을 갱신한다 (--reason 필수)
   mcp       MCP 서버를 표준 입출력으로 실행한다
   hook      Claude Code 훅 이벤트를 처리한다 (--print-settings [--shadow] 는 등록할 hooks JSON 을 출력)
@@ -61,6 +63,10 @@ func runIn(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runList(args[1:], stdout, stderr)
 	case "stats":
 		return runStats(args[1:], stdout, stderr)
+	case "judge-stats":
+		return runJudgeStats(args[1:], stdout, stderr)
+	case "replay":
+		return runReplay(args[1:], stdout, stderr)
 	case "retire":
 		return runRetire(args[1:], stdout, stderr)
 	case "mcp":

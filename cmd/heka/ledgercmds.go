@@ -71,6 +71,13 @@ func whyLine(r ledger.Row) string {
 		}
 		line += " | 뺌: " + strings.Join(out, "; ")
 	}
+	if len(r.Judges) > 0 {
+		var js []string
+		for _, j := range r.Judges {
+			js = append(js, fmt.Sprintf("%s %s %dms", j.ID, judgeWord(j), j.MS))
+		}
+		line += " | 판정: " + strings.Join(js, "; ")
+	}
 	if len(r.Checks) > 0 {
 		var cs []string
 		for _, c := range r.Checks {
@@ -92,6 +99,19 @@ func whyLine(r ledger.Row) string {
 		line += " (그림자)"
 	}
 	return line
+}
+
+// judgeWord 는 판정 기록 하나의 결과를 한 마디로 적는다.
+func judgeWord(j ledger.Judged) string {
+	switch {
+	case j.Timeout:
+		return "시간 초과"
+	case j.Error:
+		return "오류"
+	case j.Inject:
+		return "넣음"
+	}
+	return "안 넣음"
 }
 
 // runWhy 는 `heka why` 를 실행한다. 원장의 최근 줄을 사람이 읽는 꼴로 보인다.

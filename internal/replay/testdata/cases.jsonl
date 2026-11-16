@@ -1,0 +1,10 @@
+{"id":"c1-prompt-push","moment":{"kind":"prompt","text":"푸시해 줘","scope":["repo/sample-app"],"repo":"sample-app"},"expect":{"inject":["no-force-push"],"not_inject":["doc-edit-rule"],"silent":false},"confirmed":true,"source":"user"}
+{"id":"c2-tool-force-push","moment":{"kind":"tool","tool":{"name":"Bash","input":{"command":"git push --force"}},"scope":["repo/sample-app"],"repo":"sample-app"},"expect":{"inject":["no-force-push"]},"confirmed":true,"source":"user"}
+{"id":"c3-silent","moment":{"kind":"prompt","text":"오늘 날씨 어때"},"expect":{"silent":true},"confirmed":true,"source":"user"}
+{"id":"c4-tool-edit-doc","moment":{"kind":"tool","tool":{"name":"Edit","input":{"file_path":"/work/sample-app/README.md"}},"scopes":["repo/sample-app"]},"expect":{"inject":["doc-edit-rule"]},"confirmed":false,"source":"ai"}
+{"id":"c5-direct-action","moment":{"kind":"tool","action":"git.push","scope":["repo/sample-app"]},"expect":{"inject":["no-force-push"]},"confirmed":true,"source":"user"}
+{"id":"c6-topic","moment":{"kind":"prompt","text":"커밋 메시지는 어떻게 써야 해?"},"expect":{"also_inject":["commit-message-korean"]},"confirmed":false,"source":"ai"}
+{"id":"c7-session-start","moment":{"kind":"session_start","scope":["repo/sample-app"]},"expect":{"inject":["session-start-note"]},"confirmed":true,"source":"user"}
+{"id":"c8-subagent","moment":{"kind":"subagent_start","agent":"reviewer","text":"변경을 검토해 줘"},"expect":{"inject":["subagent-note"]},"confirmed":true,"source":"user"}
+{"id":"c9-negated","moment":{"kind":"prompt","text":"푸시하지 마","scope":["repo/sample-app"]},"expect":{"silent":true},"confirmed":true,"source":"user"}
+{"id":"c10-tool-made","moment":{"kind":"prompt","text":"<task-notification>푸시해 줘</task-notification>","scope":["repo/sample-app"]},"expect":{"silent":true},"confirmed":true,"source":"user"}
