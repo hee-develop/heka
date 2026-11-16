@@ -55,6 +55,7 @@ type Config struct {
 	NegationWindow int                  `yaml:"negation_window"`
 	Budgets        map[string]int       `yaml:"budgets"`
 	Judge          Judge                `yaml:"judge"`
+	ToolActions    map[string][]string  `yaml:"tool_actions"`
 }
 
 // DefaultBudgets 는 순간별 토큰 상한의 기본값이다.
@@ -94,6 +95,11 @@ func (c *Config) validate() error {
 	for _, n := range c.Negations {
 		if _, err := regexp.Compile(n); err != nil {
 			return fmt.Errorf("negations 정규식이 컴파일되지 않음: %w", err)
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(c.ToolActions)) {
+		if strings.TrimSpace(k) == "" || len(c.ToolActions[k]) == 0 || slices.Contains(c.ToolActions[k], "") {
+			return fmt.Errorf("tool_actions[%q]: 키와 동작 이름은 비어 있으면 안 되고 동작 이름이 하나 이상 있어야 함", k)
 		}
 	}
 	j := &c.Judge
@@ -181,7 +187,49 @@ func (c *Config) ActionVocab() map[string]bool {
 			v[p] = true
 		}
 	}
+	for _, names := range c.ToolActions {
+		for _, n := range names {
+			for _, x := range c.ActionClosure(n) {
+				v[x] = true
+			}
+		}
+	}
 	return v
+}
+
+// ToolActionsFor 는 키(도구 이름 또는 "Skill:<스킬 이름>") 중 하나라도 tool_actions 의 키 패턴에 맞으면
+// 그 동작 이름들을 돌려준다. 패턴의 *는 임의의 글자열이다. 설정 키의 정렬 순서를 따르고 중복은 뺀다.
+func (c *Config) ToolActionsFor(keys ...string) []string {
+	var out []string
+	for _, pat := range slices.Sorted(maps.Keys(c.ToolActions)) {
+		if !slices.ContainsFunc(keys, func(k string) bool { return globMatch(pat, k) }) {
+			continue
+		}
+		for _, n := range c.ToolActions[pat] {
+			if !slices.Contains(out, n) {
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
+// globMatch 는 pat 의 *를 임의의 글자열로 보고 s 전체가 맞는지 본다.
+func globMatch(pat, s string) bool {
+	head, rest, found := strings.Cut(pat, "*")
+	if !found {
+		return pat == s
+	}
+	if !strings.HasPrefix(s, head) {
+		return false
+	}
+	s = s[len(head):]
+	for i := 0; i <= len(s); i++ {
+		if globMatch(rest, s[i:]) {
+			return true
+		}
+	}
+	return false
 }
 
 // ScopeNames 는 설정에 나오는 모든 범위 이름이다.

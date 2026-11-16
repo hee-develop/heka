@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -149,5 +150,48 @@ func TestSelectCommand(t *testing.T) {
 	}
 	if code, _, _ := sel("--moment", "nope"); code != 1 {
 		t.Errorf("모르는 순간은 1: %d", code)
+	}
+}
+
+// resolve 명령: Bash 명령과 JSON 입력을 해석해 JSON 으로 출력하고, 설정의 tool_actions 를 쓴다.
+func TestResolveCommand(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HEKA_HOME", home)
+	cfg := "tool_actions:\n  \"Skill:create-flag\": [feature_flag.create]\n"
+	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := func(args ...string) (int, map[string]any, string) {
+		var out, errb bytes.Buffer
+		code := run(append([]string{"resolve"}, args...), &out, &errb)
+		var m map[string]any
+		if code == 0 {
+			if err := json.Unmarshal(out.Bytes(), &m); err != nil {
+				t.Fatalf("JSON 이 아님: %v\n%s", err, out.String())
+			}
+		}
+		return code, m, errb.String()
+	}
+
+	code, m, errs := res("--tool", "Bash", "--command", "git commit -m x && git push -f", "--cwd", "/home/dev/work/sample-app")
+	if code != 0 || !reflect.DeepEqual(m["actions"], []any{"git.commit", "git.push.force"}) {
+		t.Errorf("Bash: 코드 %d, %v, %s", code, m, errs)
+	}
+	code, m, _ = res("--tool", "Skill", "--input", `{"skill":"create-flag"}`)
+	if code != 0 || !reflect.DeepEqual(m["actions"], []any{"skill.run", "feature_flag.create"}) {
+		t.Errorf("Skill: 코드 %d, %v", code, m)
+	}
+	code, m, _ = res("--tool", "Task", "--input", `{"subagent_type":"Explore"}`)
+	if code != 0 || m["agent"] != "Explore" {
+		t.Errorf("Task: 코드 %d, %v", code, m)
+	}
+	code, m, _ = res("--tool", "Edit", "--input", `{"file_path":"/home/dev/work/sample-app/a.md"}`)
+	if code != 0 || !reflect.DeepEqual(m["paths"], []any{"/home/dev/work/sample-app/a.md"}) {
+		t.Errorf("Edit: 코드 %d, %v", code, m)
+	}
+	for _, args := range [][]string{{}, {"--tool", "Bash", "--command", "x", "--input", "{}"}, {"--tool", "Bash", "extra"}, {"--tool", "Bash", "--input", "[1]"}} {
+		if code, _, _ := res(args...); code != 2 {
+			t.Errorf("%v: 코드 %d, 기대 2", args, code)
+		}
 	}
 }

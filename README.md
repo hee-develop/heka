@@ -4,7 +4,11 @@ heka는 AI 에이전트가 일하는 각 순간에, 그 순간에 필요한 컨�
 
 ## 현재 상태
 
-설계 단계이며 구현은 일부만 있습니다. 항목 파일과 설정을 읽어 검증하고 색인(SQLite)을 만드는 `heka index [--check]`, 순간 하나에 넣을 항목을 골라 JSON 으로 보여 주는 `heka select`, `heka version` 이 동작합니다. 설정 예시는 `config.example.yaml` 입니다. 훅과 MCP 는 아직 없습니다. 데이터 폴더는 `$HEKA_HOME` 이고, 없으면 `$HOME/.heka` 입니다(잠정).
+설계 단계이며 구현은 일부만 있습니다. 항목 파일과 설정을 읽어 검증하고 색인(SQLite)을 만드는 `heka index [--check]`, 순간 하나에 넣을 항목을 골라 JSON 으로 보여 주는 `heka select`, 도구 호출 하나를 동작 이름으로 바꿔 보여 주는 `heka resolve`, `heka version` 이 동작합니다. 설정 예시는 `config.example.yaml` 입니다. 훅과 MCP 는 아직 없습니다. 데이터 폴더는 `$HEKA_HOME` 이고, 없으면 `$HOME/.heka` 입니다(잠정).
+
+## 도구 호출을 동작 이름으로
+
+`heka resolve --tool Bash --command 'git commit -m x && git push -f'` 처럼 도구 호출 하나를 동작 이름(`git.commit`, `git.push.force`, `code.edit` 등)으로 해석해 JSON 으로 출력합니다. Bash 명령은 `internal/shell` 이 구간과 단어로 나누고 접두(`sudo`, `env`, `exec` 등)와 git 전역 옵션을 벗긴 뒤 읽습니다. Bash 가 아닌 호출 중 도구 이름이나 스킬 이름으로만 알 수 있는 동작은 설정의 `tool_actions` 로 잇습니다(`config.example.yaml` 참고).
 
 ## 문서
 
