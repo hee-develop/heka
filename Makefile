@@ -29,6 +29,6 @@ hooks:
 hooks-test:
 	bash scripts/test-pre-push.sh
 
-# 훅을 HEAD 에서 닿는 모든 커밋에 대해 수동으로 돌린다.
+# 훅을 로컬의 모든 브랜치·태그·원격 추적 ref(와 HEAD)에서 닿는 커밋·주석 태그·ref 이름에 대해 수동으로 돌린다.
 scan:
 	.githooks/pre-push --all
