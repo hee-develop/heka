@@ -34,15 +34,16 @@ const (
 
 // Input 은 훅 표준 입력의 JSON 이다. 이벤트마다 쓰는 필드가 다르다.
 type Input struct {
-	SessionID     string          `json:"session_id"`
-	Cwd           string          `json:"cwd"`
-	HookEventName string          `json:"hook_event_name"`
-	AgentID       string          `json:"agent_id"`
-	AgentType     string          `json:"agent_type"`
-	Source        string          `json:"source"`
-	Prompt        string          `json:"prompt"`
-	ToolName      string          `json:"tool_name"`
-	ToolInput     json.RawMessage `json:"tool_input"`
+	SessionID      string          `json:"session_id"`
+	Cwd            string          `json:"cwd"`
+	HookEventName  string          `json:"hook_event_name"`
+	AgentID        string          `json:"agent_id"`
+	AgentType      string          `json:"agent_type"`
+	Source         string          `json:"source"`
+	TranscriptPath string          `json:"transcript_path"`
+	Prompt         string          `json:"prompt"`
+	ToolName       string          `json:"tool_name"`
+	ToolInput      json.RawMessage `json:"tool_input"`
 }
 
 // specific 은 hookSpecificOutput 이다.
@@ -212,6 +213,9 @@ func (h *handler) claim(ctx context.Context, injs []selector.Injection, extra fu
 	for _, i := range out {
 		h.row.Injected = append(h.row.Injected, ledger.Injected{ID: i.ID, Hash: i.Hash, Why: i.Why})
 	}
+	if len(out) > 0 {
+		h.row.Tokens = selector.Tokens(contextText(out))
+	}
 	return out, nil
 }
 
@@ -269,7 +273,11 @@ func (h *handler) sessionStart(ctx context.Context) (*specific, error) {
 		return nil, err
 	}
 	h.record(res)
-	injs, err := h.claim(ctx, res.Injections, nil)
+	injs, err := h.claim(ctx, res.Injections, func(s *session.State) {
+		if h.in.TranscriptPath != "" {
+			s.Transcript = h.in.TranscriptPath
+		}
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +295,9 @@ func (h *handler) prompt(ctx context.Context) (*specific, error) {
 	}
 	err := session.Update(h.home, h.in.SessionID, func(s *session.State) {
 		s.EndTurn()
-		s.AddPrompt(h.in.Prompt)
+		if h.in.TranscriptPath != "" {
+			s.Transcript = h.in.TranscriptPath
+		}
 	})
 	if err != nil {
 		return nil, err

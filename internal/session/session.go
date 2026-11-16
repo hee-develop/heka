@@ -25,9 +25,6 @@ const (
 	lockTries = 100             // 최대 1초 기다린다
 	lockStale = 5 * time.Second // 이보다 오래된 잠금은 죽은 프로세스의 것으로 보고 치운다
 	maxPend   = 16
-
-	maxPrompts    = 50   // 세션마다 남기는 프롬프트 수
-	maxPromptRune = 4000 // 프롬프트 하나에서 남기는 글자 수
 )
 
 // Delegation 은 위임 도구 호출에서 본 글이다. 서브에이전트가 시작될 때 꺼내 쓴다.
@@ -38,25 +35,15 @@ type Delegation struct {
 
 // State 는 세션 하나의 상태다. Shown 의 키는 주체의 agent_id 이고 메인은 빈 문자열이다.
 type State struct {
-	Shown   map[string][]string `json:"shown"`             // 주체 → 이미 넣은 항목 id
-	Grants  map[string]string   `json:"grants"`            // 동작 → turn|session
-	Pending []Delegation        `json:"pending"`           // 기다리는 위임. 오래된 것이 앞
-	Prompts []string            `json:"prompts,omitempty"` // 사용자가 보낸 프롬프트. 등록할 때 인용 대조에 쓴다. 오래된 것이 앞
+	Shown      map[string][]string `json:"shown"`                // 주체 → 이미 넣은 항목 id
+	Grants     map[string]string   `json:"grants"`               // 동작 → turn|session
+	Pending    []Delegation        `json:"pending"`              // 기다리는 위임. 오래된 것이 앞
+	Transcript string              `json:"transcript,omitempty"` // 이 세션의 기록 파일 경로. 등록할 때 인용 대조에 쓴다(프롬프트 글은 남기지 않는다)
 }
 
-// AddPrompt 는 사용자 프롬프트를 적는다. 길면 앞 4,000자만, 넘치면 오래된 것부터 버린다.
-func (s *State) AddPrompt(text string) {
-	if r := []rune(text); len(r) > maxPromptRune {
-		text = string(r[:maxPromptRune])
-	}
-	s.Prompts = append(s.Prompts, text)
-	if len(s.Prompts) > maxPrompts {
-		s.Prompts = s.Prompts[len(s.Prompts)-maxPrompts:]
-	}
-}
-
-// RecentPrompts 는 since 이후에 고쳐진 세션 상태 파일들의 프롬프트를 모은다.
-func RecentPrompts(home string, since time.Time) []string {
+// RecentTranscripts 는 since 이후에 고쳐진 세션 상태 파일들에 적힌 세션 기록 파일의 경로를 모은다.
+// 같은 경로는 한 번만 담는다. 기록 파일이 있는지는 보지 않는다.
+func RecentTranscripts(home string, since time.Time) []string {
 	paths, _ := filepath.Glob(filepath.Join(home, "sessions", "*.json"))
 	var out []string
 	for _, p := range paths {
@@ -65,8 +52,8 @@ func RecentPrompts(home string, since time.Time) []string {
 			continue
 		}
 		var s State
-		if b, err := os.ReadFile(p); err == nil && json.Unmarshal(b, &s) == nil {
-			out = append(out, s.Prompts...)
+		if b, err := os.ReadFile(p); err == nil && json.Unmarshal(b, &s) == nil && s.Transcript != "" && !slices.Contains(out, s.Transcript) {
+			out = append(out, s.Transcript)
 		}
 	}
 	return out
