@@ -135,7 +135,7 @@ confirm: false
 |---|---|
 | `text` | 주입문. 한두 문장이고 이것만 읽어도 행동할 수 있어야 한다 |
 | `must` | 반드시 지킬 것인가(true), 알면 좋은 것인가(false) |
-| `when` | 구조로 판정하는 조건: 순간(`moment`: session_start, prompt, tool, subagent_start), 동작(`action`), 경로(`path`), 저장소(`repo`), 에이전트 종류(`agent`) |
+| `when` | 구조로 판정하는 조건: 순간(`moment`: session_start, prompt, tool, subagent_start), 동작(`action`), 경로(`path`), 저장소(`repo`), 에이전트 종류(`agent`). `agent`의 `main`은 서브에이전트가 아닌 본체를 가리킨다. 본체에만 줄 항목(예: 서브에이전트에 위임하라는 규칙)에 쓴다 |
 | `about` | 주제어. 프롬프트·위임 글과 견준다. 동작 조건이 붙은 항목에서는 조회에만 쓴다 (3.2) |
 | `scope` | 주입해도 되는 범위. 범위 밖에서는 후보에도 들지 않는다 |
 | `source` | 누가 말했는가: user, doc, ai |
