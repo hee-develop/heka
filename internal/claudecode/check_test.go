@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -510,5 +511,68 @@ func TestSettingsShape(t *testing.T) {
 	}
 	if sh["Stop"] == nil || sh["UserPromptSubmit"][0].Timeout < 60 {
 		t.Errorf("그림자 설정의 시간 상한: %+v", sh)
+	}
+}
+
+// 파일로 넘긴 커밋 메시지는 훅 입력의 cwd 기준으로 읽어 검사한다.
+func TestCheckReadsFileRelativeToCwd(t *testing.T) {
+	e := newEnv(t)
+	e.checkEnv()
+	if err := os.MkdirAll(e.app(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(e.app()+"/msg.txt", []byte(longTitle+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := e.bash("f1", `git commit -F msg.txt`)
+	if h == nil || h.Specific.Perm != "deny" || !strings.Contains(h.Specific.Reason, "커밋 메시지") {
+		t.Fatalf("파일의 메시지가 검사에 걸려야 함: %+v", h)
+	}
+	if c := checkOf(e.lastRow(), "commit-fmt"); c == nil || c["result"] != "fail" || c["blocked"] != true {
+		t.Errorf("검사 기록: %v", e.lastRow()["checks"])
+	}
+	if err := os.WriteFile(e.app()+"/msg.txt", []byte("짧은 제목\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if h := e.bash("f1", `git commit -F msg.txt`); h != nil && h.Specific.Perm != "" {
+		t.Errorf("통과해야 함: %+v", h)
+	}
+	if c := checkOf(e.lastRow(), "commit-fmt"); c == nil || c["result"] != "pass" {
+		t.Errorf("통과 기록: %v", e.lastRow()["checks"])
+	}
+}
+
+// 건너뛴 이유는 원장의 note 로 남고, 파일의 경로나 내용은 남지 않는다.
+func TestCheckSkipNotes(t *testing.T) {
+	e := newEnv(t)
+	e.checkEnv()
+	cases := []struct{ name, cmd, note string }{
+		{"없는 파일", `git commit -F nosuch-secret-name.txt`, "파일을 읽지 못함"},
+		{"변수", `git commit -F $NOSUCH/msg.txt`, "변수를 풀지 못함"},
+		{"같은 명령에서 고침", "echo x > m.txt && git commit -F m.txt", "같은 명령에서 파일을 고침"},
+		{"메시지 없음", `git commit --no-edit`, "대상 없음"},
+	}
+	for i, c := range cases {
+		e.bash("n"+string(rune('a'+i)), c.cmd)
+		cc := checkOf(e.lastRow(), "commit-fmt")
+		if cc == nil || cc["result"] != "skip" || cc["note"] != c.note {
+			t.Errorf("%s: %v", c.name, e.lastRow()["checks"])
+		}
+	}
+	files, _ := filepath.Glob(filepath.Join(e.home, "ledger", "*.jsonl"))
+	for _, f := range files {
+		if b, _ := os.ReadFile(f); strings.Contains(string(b), "nosuch-secret-name") {
+			t.Errorf("원장에 경로가 남음: %s", b)
+		}
+	}
+	// 통과·실패한 검사에는 note 가 없다.
+	e.bash("nz", commitCmd("짧은 제목"))
+	if cc := checkOf(e.lastRow(), "commit-fmt"); cc == nil || cc["note"] != nil {
+		t.Errorf("pass 에는 note 가 없어야 함: %v", cc)
+	}
+	// 턴 종료의 빈 응답도 이유가 남는다.
+	e.wantQuiet("nstop", "")
+	if cc := checkOf(e.lastRow(), "stop-a"); cc == nil || cc["note"] != "대상 없음" {
+		t.Errorf("빈 응답의 note: %v", e.lastRow()["checks"])
 	}
 }

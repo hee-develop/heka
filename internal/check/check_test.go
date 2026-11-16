@@ -1,10 +1,13 @@
 package check
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/hee-develop/heka/internal/item"
+	"github.com/hee-develop/heka/internal/shell"
 )
 
 func TestTargets(t *testing.T) {
@@ -55,5 +58,56 @@ func TestEval(t *testing.T) {
 	_, why = Eval(item.Check{Target: "last_message", NotPattern: "TODO"}, []string{"TODO 남김"})
 	if !strings.Contains(why, "마지막 응답") || !strings.Contains(why, "not_pattern") {
 		t.Errorf("이유 = %q", why)
+	}
+}
+
+func TestExtractFromFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "m.txt"), []byte("파일 제목\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := shell.Files{Cwd: dir, Read: ReadFile}
+	texts, notes := Extract("Bash", map[string]any{"command": `git commit -F m.txt`}, f)
+	if texts["commit_message"][0] != "파일 제목" || len(notes) != 1 || notes["pr_body"] != shell.NoteNoTarget {
+		t.Errorf("Extract = %v, %v", texts, notes)
+	}
+	texts, notes = Extract("Bash", map[string]any{"command": `git commit -F none.txt && gh pr edit 1 --body-file $X`}, f)
+	if _, ok := texts["commit_message"]; ok || notes["commit_message"] != shell.NoteUnreadable || notes["pr_body"] != shell.NoteUnresolved {
+		t.Errorf("Extract = %v, %v", texts, notes)
+	}
+	if _, notes := Extract("Write", nil, f); len(notes) != 0 {
+		t.Errorf("Bash 가 아니면 이유도 없음: %v", notes)
+	}
+}
+
+func TestReadFileLimits(t *testing.T) {
+	dir := t.TempDir()
+	put := func(name string, n int) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(strings.Repeat("a", n)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	if b, err := ReadFile(put("ok", shell.MaxFileSize)); err != nil || len(b) != shell.MaxFileSize {
+		t.Errorf("상한 크기는 읽어야 함: %d %v", len(b), err)
+	}
+	if _, err := ReadFile(put("big", shell.MaxFileSize+1)); err == nil {
+		t.Error("상한을 넘으면 읽지 않아야 함")
+	}
+	if _, err := ReadFile(dir); err == nil {
+		t.Error("디렉터리는 읽지 않아야 함")
+	}
+	if _, err := ReadFile(filepath.Join(dir, "none")); err == nil {
+		t.Error("없는 파일은 오류")
+	}
+}
+
+func TestEvalSkipNote(t *testing.T) {
+	if r, why := Eval(item.Check{Target: "command", Pattern: "x"}, nil); r != Skip || why != shell.NoteNoTarget {
+		t.Errorf("글 없음: %s %q", r, why)
+	}
+	if r, why := Eval(item.Check{Target: "command", Pattern: "("}, []string{"x"}); r != Skip || why != NoteBadPattern {
+		t.Errorf("틀린 식: %s %q", r, why)
 	}
 }

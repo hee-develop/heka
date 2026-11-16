@@ -11,6 +11,10 @@ type Segment struct {
 	Words     []string
 	Redirects []string
 	Heredocs  []string // 이 구간에서 연 heredoc 본문(구분자 줄 제외, 열린 순서)
+	Appends   []string // Redirects 가운데 `>>`(덧붙이기)로 쓴 것의 대상
+	// Subst 는 구간의 마지막 단어 바로 뒤에 $( 나 백틱이 붙어 있었다는 뜻이다(`B=$(mktemp)`).
+	// 토크나이저는 거기서 구간을 나누므로 그 단어의 값은 글자 그대로가 아니다.
+	Subst bool
 }
 
 type token struct {
@@ -41,12 +45,14 @@ func SplitCommand(cmd string) []Segment {
 		}
 		w, inWord, quoted = w[:0], false, false
 	}
+	glued := false // 이번 endSeg 가 단어 바로 뒤의 $( 나 백틱 때문인가
 	endSeg := func() {
 		endWord()
 		if seg, ok := buildSegment(toks); ok {
+			seg.Subst = glued
 			segs = append(segs, seg)
 		}
-		toks = nil
+		toks, glued = nil, false
 	}
 
 	n := len(cmd)
@@ -108,9 +114,13 @@ func SplitCommand(cmd string) []Segment {
 				i = next - 1
 			}
 			pending = nil
-		case c == ';' || c == '(' || c == ')' || c == '`':
+		case c == '`':
+			glued = inWord
+			endSeg()
+		case c == ';' || c == '(' || c == ')':
 			endSeg()
 		case c == '$' && i+1 < n && cmd[i+1] == '(':
+			glued = inWord
 			endSeg()
 			i++
 		case c == '|':
@@ -227,16 +237,24 @@ func buildSegment(toks []token) (Segment, bool) {
 	for i := 0; i < len(toks); i++ {
 		t := toks[i]
 		if !t.quoted {
-			if rest, ok := redirectOut(t.text); ok {
+			if rest, app, ok := redirectOut(t.text); ok {
+				target := rest
 				switch {
 				case rest == "":
 					if i+1 < len(toks) {
 						i++
-						seg.Redirects = append(seg.Redirects, toks[i].text)
+						target = toks[i].text
+						seg.Redirects = append(seg.Redirects, target)
+					} else {
+						target = ""
 					}
 				case rest[0] == '&': // 2>&1 같은 fd 복제는 파일이 아니다
+					target = ""
 				default:
 					seg.Redirects = append(seg.Redirects, rest)
+				}
+				if app && target != "" {
+					seg.Appends = append(seg.Appends, target)
 				}
 				continue
 			}
@@ -247,7 +265,8 @@ func buildSegment(toks []token) (Segment, bool) {
 }
 
 // redirectOut 은 `>`, `>>`, `2>`, `&>`, `>|` 로 시작하는 토큰이면 연산자 뒤 나머지를 돌려준다.
-func redirectOut(s string) (string, bool) {
+// app 은 연산자가 `>>` 인가이다.
+func redirectOut(s string) (rest string, app, ok bool) {
 	i := 0
 	if i < len(s) && s[i] == '&' {
 		i++
@@ -257,11 +276,12 @@ func redirectOut(s string) (string, bool) {
 		}
 	}
 	if i >= len(s) || s[i] != '>' {
-		return "", false
+		return "", false, false
 	}
 	i++
 	if i < len(s) && (s[i] == '>' || s[i] == '|') {
+		app = s[i] == '>'
 		i++
 	}
-	return s[i:], true
+	return s[i:], app, true
 }
