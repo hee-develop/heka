@@ -195,3 +195,50 @@ func TestResolveCommand(t *testing.T) {
 		}
 	}
 }
+
+// hook 명령: 표준 입력 JSON 을 처리해 JSON 을 내고, 어떤 입력에도 종료 코드 0 이며, --print-settings 는 hooks 조각을 낸다.
+func TestHookCommand(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HEKA_HOME", home)
+	items := filepath.Join(home, "items")
+	if err := os.MkdirAll(items, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "claude_code: {scopes: [tool/claude-code]}\n"
+	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nid: start-rule\ntext: 지어낸 시작 규칙.\nmust: true\nwhen: {moment: session_start}\nsource: user\nquote: 지어낸 말\nabout: [시작]\nscope: [tool/claude-code]\n---\n"
+	if err := os.WriteFile(filepath.Join(items, "start-rule.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hook := func(stdin string, args ...string) (int, string, string) {
+		var out, errb bytes.Buffer
+		code := runIn(append([]string{"hook"}, args...), strings.NewReader(stdin), &out, &errb)
+		return code, out.String(), errb.String()
+	}
+	code, out, _ := hook(`{"hook_event_name":"SessionStart","session_id":"s","cwd":"/x","source":"startup"}`)
+	var got struct {
+		H struct{ HookEventName, AdditionalContext string } `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil || code != 0 || got.H.HookEventName != "SessionStart" || got.H.AdditionalContext != "[heka]\n- 지어낸 시작 규칙." {
+		t.Errorf("코드 %d, 출력 %q", code, out)
+	}
+	if code, out, _ := hook(`{"hook_event_name":"SessionStart","session_id":"s","cwd":"/x","source":"startup"}`); code != 0 || out != "" {
+		t.Errorf("두 번째는 출력이 없어야 함: %d %q", code, out)
+	}
+	if code, out, _ := hook("깨진 입력"); code != 0 || out != "" {
+		t.Errorf("깨진 입력: %d %q", code, out)
+	}
+	code, out, _ = hook("", "--print-settings")
+	var st map[string]map[string]any
+	if err := json.Unmarshal([]byte(out), &st); err != nil || code != 0 || st["hooks"]["SubagentStart"] == nil {
+		t.Errorf("--print-settings: %d %q", code, out)
+	}
+	if code, _, e := hook("", "--nosuch"); code != 2 || e == "" {
+		t.Errorf("모르는 인자: %d %q", code, e)
+	}
+	if _, err := os.Stat(filepath.Join(home, "settings.json")); err == nil {
+		t.Error("설정 파일을 만들면 안 됨")
+	}
+}

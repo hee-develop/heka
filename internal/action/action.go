@@ -78,7 +78,7 @@ func Resolve(c Call, cfg *config.Config) Resolved {
 		}
 	case c.Tool == "Bash":
 		cmd, _ := c.Input["command"].(string)
-		acts, paths := bash(cmd, c.Cwd)
+		acts, paths := bash(cmd, c.Cwd, cfg)
 		add(acts...)
 		if len(paths) > 0 {
 			r.Paths = paths

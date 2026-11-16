@@ -442,3 +442,46 @@ func TestUnknownMoment(t *testing.T) {
 		t.Error("모르는 순간은 오류여야 함")
 	}
 }
+
+// Refused 는 표현이 있었지만 모든 자리가 버려진 동작이다.
+func TestRefused(t *testing.T) {
+	ix, cfg := env(t, testItems, testCfg)
+	r := sel1(t, ix, cfg, Moment{Kind: "prompt", Text: "푸시해도 돼? 커밋해 줘"})
+	if !reflect.DeepEqual(r.Refused, []string{"git.push"}) || !reflect.DeepEqual(r.Asked, []string{"git.commit"}) {
+		t.Errorf("asked = %v, refused = %v", r.Asked, r.Refused)
+	}
+	// 한 자리라도 살아남으면 시킨 것이다.
+	r = sel1(t, ix, cfg, Moment{Kind: "prompt", Text: "푸시해도 돼? 좋아, 푸시해 줘"})
+	if !reflect.DeepEqual(r.Asked, []string{"git.push"}) || len(r.Refused) != 0 {
+		t.Errorf("asked = %v, refused = %v", r.Asked, r.Refused)
+	}
+	r = sel1(t, ix, cfg, Moment{Kind: "prompt", Text: "안녕"})
+	if r.Refused == nil || len(r.Refused) != 0 {
+		t.Errorf("refused 는 빈 목록이어야 함: %#v", r.Refused)
+	}
+}
+
+// Injection 은 confirm 과 해시를 싣고, 도구 순간에는 확인 항목이 이미 넣은 것이어도 남는다.
+func TestConfirmFieldsAndSeen(t *testing.T) {
+	items := map[string]string{
+		"ask-rule":  u + "text: 확인 항목.\nmust: true\nconfirm: always\nwhen: {action: git.push}\nabout: [푸시]\nscope: [personal]",
+		"info-rule": u + "text: 알리기 항목.\nmust: true\nwhen: {action: git.push}\nabout: [푸시]\nscope: [personal]",
+	}
+	ix, cfg := env(t, items, testCfg)
+	m := Moment{Kind: "tool", Action: "git.push"}
+	r := sel1(t, ix, cfg, m)
+	byID := map[string]Injection{}
+	for _, i := range r.Injections {
+		byID[i.ID] = i
+	}
+	if byID["ask-rule"].Confirm != "always" || byID["info-rule"].Confirm != "false" || len(byID["ask-rule"].Hash) != 16 {
+		t.Errorf("injections = %+v", r.Injections)
+	}
+	m.Seen = map[string]bool{"ask-rule": true, "info-rule": true}
+	r = sel1(t, ix, cfg, m)
+	wantIDs(t, r, "ask-rule")
+	wantDrop(t, r, "info-rule", "중복")
+	m.Kind, m.Text = "prompt", "푸시해 줘"
+	r = sel1(t, ix, cfg, m)
+	wantIDs(t, r)
+}

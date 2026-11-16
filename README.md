@@ -4,7 +4,25 @@ heka는 AI 에이전트가 일하는 각 순간에, 그 순간에 필요한 컨�
 
 ## 현재 상태
 
-설계 단계이며 구현은 일부만 있습니다. 항목 파일과 설정을 읽어 검증하고 색인(SQLite)을 만드는 `heka index [--check]`, 순간 하나에 넣을 항목을 골라 JSON 으로 보여 주는 `heka select`, 도구 호출 하나를 동작 이름으로 바꿔 보여 주는 `heka resolve`, `heka version` 이 동작합니다. 설정 예시는 `config.example.yaml` 입니다. 훅과 MCP 는 아직 없습니다. 데이터 폴더는 `$HEKA_HOME` 이고, 없으면 `$HOME/.heka` 입니다(잠정).
+설계 단계이며 구현은 일부만 있습니다. 동작하는 명령은 다음과 같습니다.
+
+- `heka index [--check]`: 항목 파일과 설정을 읽어 검증하고 색인(SQLite)을 만듭니다.
+- `heka select`: 순간 하나에 넣을 항목을 골라 JSON 으로 보여 줍니다.
+- `heka resolve`: 도구 호출 하나를 동작 이름으로 바꿔 보여 줍니다.
+- `heka hook`: Claude Code 훅 연결부입니다. 표준 입력의 훅 JSON 을 처리해 표준 출력에 JSON 을 냅니다. `--print-settings` 는 설정 파일의 `hooks` 에 넣을 JSON 조각을 출력하며, 설정 파일을 직접 고치지는 않습니다.
+- `heka version`
+
+설정 예시는 `config.example.yaml` 입니다. 결과물 검사(`check`), MCP, 등록 명령은 아직 없습니다. 데이터 폴더는 `$HEKA_HOME` 이고, 없으면 `$HOME/.heka` 입니다(잠정).
+
+## Claude Code 훅
+
+`heka hook` 은 `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `SubagentStart` 를 처리합니다. 작업 위치(`cwd`)는 설정의 `locations` 로 범위와 저장소 이름에 맞추고, 넣을 항목은 `additionalContext` 로 냅니다. 같은 세션에서 같은 항목은 한 번만 넣고(압축·`clear` 뒤에는 다시), 서브에이전트는 `agent_id` 별로 따로 셉니다. 위임 도구(`Agent`·`Task`)의 프롬프트는 세션 상태에 적어 두었다가 `SubagentStart` 에서 그 글로 항목을 고릅니다.
+
+- 프롬프트가 시킨 동작("푸시해 줘")은 그 턴 동안의 허용으로 적힙니다. "이번 세션 동안" 같은 표현이 있으면 세션 동안 남고, "푸시하지 마" 는 허용을 거둡니다. 도구가 만든 프롬프트(`tool_prompt_prefixes` 로 시작하는 글)는 항목도 허용도 건드리지 않습니다.
+- `confirm: true` 항목은 그 동작(또는 상위 동작)에 허용이 없으면 `PreToolUse` 에서 확인을 요구하고(`permissionDecision: "ask"`), `always` 는 허용이 있어도 요구합니다.
+- 오류, 입력 해석 실패, 시간 초과(프롬프트·`SubagentStart` 25초, 나머지 5초)에서는 아무것도 출력하지 않고 종료 코드 0 으로 끝나며, 오류는 `$HEKA_HOME/ledger/errors.log` 에 한 줄 남습니다. 판단은 `$HEKA_HOME/ledger/YYYY-MM.jsonl` 에 한 줄씩 남습니다. 세션 상태는 `$HEKA_HOME/sessions/<session_id>.json` 입니다.
+
+훅 등록은 직접 합니다. `heka hook --print-settings` 가 낸 JSON 을 Claude Code 설정 파일의 `hooks` 에 넣으세요.
 
 ## 도구 호출을 동작 이름으로
 

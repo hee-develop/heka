@@ -123,7 +123,7 @@ func TestDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.NegationWindow != 8 || c.Judge.Timeout != 10*time.Second || c.Judge.Candidates != 3 || c.Judge.Votes != 1 || len(c.Judge.Command) != 0 {
+	if c.NegationWindow != 8 || c.Judge.Timeout != 15*time.Second || c.Judge.Candidates != 3 || c.Judge.Votes != 1 || len(c.Judge.Command) != 0 {
 		t.Errorf("기본값이 다름: %+v", c)
 	}
 	if !reflect.DeepEqual(c.Budgets, DefaultBudgets) {
@@ -188,5 +188,63 @@ func TestToolActionsFor(t *testing.T) {
 	}
 	if !c.ActionVocab()["b.two"] || !c.ActionVocab()["a"] {
 		t.Errorf("tool_actions 의 동작 이름도 어휘에 있어야 함: %v", c.ActionVocab())
+	}
+}
+
+// 예시 설정이 그대로 읽히고, 위치 맞춤과 기본값이 설명대로인지 본다.
+func TestExampleAndLocate(t *testing.T) {
+	b, err := os.ReadFile("../../config.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.ToolActionsFor("Bash:codegen"), []string{"code.generate"}) || c.Judge.Timeout != 15*time.Second {
+		t.Errorf("예시 설정: %v, %v", c.ToolActions, c.Judge.Timeout)
+	}
+	if !reflect.DeepEqual(c.SessionGrant, DefaultSessionGrant) || !reflect.DeepEqual(c.ClaudeCode.ToolPromptPrefixes, DefaultToolPromptPrefixes) {
+		t.Errorf("예시의 값이 기본값과 다름: %v %v", c.SessionGrant, c.ClaudeCode.ToolPromptPrefixes)
+	}
+
+	c.Locations = []Location{
+		{Path: "/w/app", Scopes: item.List{"a"}, Repo: "app-repo"},
+		{Path: "/w/app/sub", Scopes: item.List{"b"}},
+		{Path: "/w/tool-*", Scopes: item.List{"c"}},
+		{Path: "~/home-proj", Scopes: item.List{"d"}},
+	}
+	t.Setenv("HOME", "/h")
+	tests := []struct {
+		cwd, repo string
+		scopes    []string
+	}{
+		{"/w/app", "app-repo", []string{"a"}},
+		{"/w/app/x/y", "app-repo", []string{"a"}},
+		{"/w/app/sub/z", "sub", []string{"b"}}, // 가장 길게 맞는 것
+		{"/w/application", "", nil},            // 폴더 경계
+		{"/w/tool-one/src", "tool-one", []string{"c"}},
+		{"/w/tool-", "tool-", []string{"c"}},
+		{"/h/home-proj/a", "home-proj", []string{"d"}},
+		{"/elsewhere", "", nil},
+		{"", "", nil},
+	}
+	for _, tt := range tests {
+		sc, repo := c.Locate(tt.cwd)
+		if !reflect.DeepEqual(sc, tt.scopes) || repo != tt.repo {
+			t.Errorf("Locate(%q) = %v, %q; 기대 %v, %q", tt.cwd, sc, repo, tt.scopes, tt.repo)
+		}
+	}
+}
+
+func TestLocationErrors(t *testing.T) {
+	for _, body := range []string{"locations:\n  - scopes: [a]\n", "session_grant: ['(']\n"} {
+		if _, err := Load(write(t, body)); err == nil {
+			t.Errorf("%q: 오류가 나야 함", body)
+		}
 	}
 }

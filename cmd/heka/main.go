@@ -16,12 +16,17 @@ const usage = `사용법: heka <명령>
   index     항목과 설정을 검증하고 색인을 만든다 (--check 는 검증만)
   select    순간 하나에 넣을 항목을 골라 JSON 으로 출력한다
   resolve   도구 호출 하나를 동작 이름으로 해석해 JSON 으로 출력한다
+  hook      Claude Code 훅 이벤트를 처리한다 (--print-settings 는 등록할 hooks JSON 을 출력)
   version   버전을 출력한다
   help      이 도움말을 출력한다
 `
 
 // run 은 명령을 실행하고 종료 코드를 돌려준다.
 func run(args []string, stdout, stderr io.Writer) int {
+	return runIn(args, os.Stdin, stdout, stderr)
+}
+
+func runIn(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -36,6 +41,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runSelect(args[1:], stdout, stderr)
 	case "resolve":
 		return runResolve(args[1:], stdout, stderr)
+	case "hook":
+		return runHook(args[1:], stdin, stdout, stderr)
 	case "version":
 		fmt.Fprintln(stdout, version)
 		return 0

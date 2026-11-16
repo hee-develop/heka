@@ -56,7 +56,29 @@ type Config struct {
 	Budgets        map[string]int       `yaml:"budgets"`
 	Judge          Judge                `yaml:"judge"`
 	ToolActions    map[string][]string  `yaml:"tool_actions"`
+	Locations      []Location           `yaml:"locations"`
+	ClaudeCode     ClaudeCode           `yaml:"claude_code"`
+	SessionGrant   []string             `yaml:"session_grant"`
 }
+
+// Location 은 작업 위치 하나와 그 범위다. Path 끝에 *를 쓰면 이름이 그 앞부분으로 시작하는 폴더들이다.
+type Location struct {
+	Path   string    `yaml:"path"`
+	Scopes item.List `yaml:"scopes"`
+	Repo   string    `yaml:"repo"` // when.repo 와 견줄 이름. 없으면 path 의 마지막 이름
+}
+
+// ClaudeCode 는 Claude Code 연결부의 설정이다.
+type ClaudeCode struct {
+	Scopes             item.List `yaml:"scopes"`               // 이 연결부로 들어온 순간에 늘 붙는 범위
+	ToolPromptPrefixes []string  `yaml:"tool_prompt_prefixes"` // 이걸로 시작하는 프롬프트는 도구가 만든 것
+}
+
+// 도구가 만든 프롬프트의 머리와 세션 허용 표현의 기본값이다.
+var (
+	DefaultToolPromptPrefixes = []string{"<task-notification", "<agent-message"}
+	DefaultSessionGrant       = []string{`이번\s*세션`, `세션\s*동안`, `앞으로\s*계속`, `for\s+this\s+session`}
+)
 
 // DefaultBudgets 는 순간별 토큰 상한의 기본값이다.
 var DefaultBudgets = map[string]int{"session_start": 1000, "prompt": 300, "tool": 300, "subagent_start": 300}
@@ -102,6 +124,22 @@ func (c *Config) validate() error {
 			return fmt.Errorf("tool_actions[%q]: 키와 동작 이름은 비어 있으면 안 되고 동작 이름이 하나 이상 있어야 함", k)
 		}
 	}
+	for i, l := range c.Locations {
+		if strings.TrimSpace(l.Path) == "" {
+			return fmt.Errorf("locations[%d].path 가 비어 있음", i)
+		}
+	}
+	for _, p := range c.SessionGrant {
+		if _, err := regexp.Compile(p); err != nil {
+			return fmt.Errorf("session_grant 정규식이 컴파일되지 않음: %w", err)
+		}
+	}
+	if c.ClaudeCode.ToolPromptPrefixes == nil {
+		c.ClaudeCode.ToolPromptPrefixes = DefaultToolPromptPrefixes
+	}
+	if c.SessionGrant == nil {
+		c.SessionGrant = DefaultSessionGrant
+	}
 	j := &c.Judge
 	if c.NegationWindow < 0 || j.Timeout < 0 || j.Candidates < 0 || j.Votes < 0 || j.Votes > 2 {
 		return fmt.Errorf("negation_window, judge.timeout, judge.candidates 는 0 이상, judge.votes 는 1 또는 2 여야 함")
@@ -118,7 +156,7 @@ func (c *Config) validate() error {
 		c.NegationWindow = 8
 	}
 	if j.Timeout == 0 {
-		j.Timeout = 10 * time.Second
+		j.Timeout = 15 * time.Second
 	}
 	if j.Candidates == 0 {
 		j.Candidates = 3
@@ -230,6 +268,44 @@ func globMatch(pat, s string) bool {
 		}
 	}
 	return false
+}
+
+// Locate 는 작업 폴더에 가장 길게 맞는 위치의 범위와 저장소 이름을 돌려준다. 맞는 위치가 없으면 빈 값이다.
+// path 앞의 ~ 는 홈 폴더로 풀고, 끝의 *는 이름이 그 앞부분으로 시작하는 폴더들을 뜻한다.
+func (c *Config) Locate(cwd string) (scopes []string, repo string) {
+	cwd = filepath.Clean(cwd)
+	home, _ := os.UserHomeDir()
+	best := -1
+	for _, l := range c.Locations {
+		p, star := strings.CutSuffix(expandHome(l.Path, home), "*")
+		end := 0 // cwd[:end] 가 맞은 폴더다
+		if star {
+			if !strings.HasPrefix(cwd, p) {
+				continue
+			}
+			end = len(p) + strings.IndexByte(cwd[len(p):]+"/", '/')
+		} else {
+			p = filepath.Clean(p)
+			if cwd != p && !strings.HasPrefix(cwd, p+"/") {
+				continue
+			}
+			end = len(p)
+		}
+		if end > best {
+			best, scopes, repo = end, l.Scopes, l.Repo
+			if repo == "" {
+				repo = filepath.Base(cwd[:end])
+			}
+		}
+	}
+	return scopes, repo
+}
+
+func expandHome(p, home string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		return home + p[1:]
+	}
+	return p
 }
 
 // ScopeNames 는 설정에 나오는 모든 범위 이름이다.

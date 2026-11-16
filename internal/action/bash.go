@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/hee-develop/heka/internal/config"
 	"github.com/hee-develop/heka/internal/shell"
 )
 
@@ -17,8 +18,9 @@ const maxDepth = 3
 // bash 는 Bash 명령의 동작 이름과 쓰기 대상 경로를 돌려준다. 동작이 하나도 없으면 bash.other 다.
 // 파일에 쓰는 명령(리다이렉션, tee, sed -i, cp, mv)은 대상의 확장자에 따라 code.edit 나 doc.edit 도 내며,
 // 이때는 다른 동작이 없어도 bash.other 가 아니다.
-func bash(cmd, cwd string) (actions, paths []string) {
-	st := &scan{cwd: cwd, home: os.Getenv("HOME"), tmp: os.Getenv("TMPDIR")}
+// cfg 의 tool_actions 에 있는 "Bash:<명령 이름>" 키도 같은 구간 자리에서 동작을 낸다.
+func bash(cmd, cwd string, cfg *config.Config) (actions, paths []string) {
+	st := &scan{cfg: cfg, cwd: cwd, home: os.Getenv("HOME"), tmp: os.Getenv("TMPDIR")}
 	st.run(cmd, 0)
 	actions = st.actions
 	for _, p := range st.paths {
@@ -31,6 +33,7 @@ func bash(cmd, cwd string) (actions, paths []string) {
 }
 
 type scan struct {
+	cfg            *config.Config
 	cwd, home, tmp string
 	actions, paths []string
 }
@@ -80,8 +83,6 @@ func (s *scan) run(cmd string, depth int) {
 			s.add("test.run")
 		case name == "npm" || name == "yarn" || name == "pnpm" || name == "bun":
 			s.pkgManager(name, w1, w2)
-		case name == "codegen":
-			s.add("code.generate")
 		case name == "gws":
 			s.gws(args)
 		case name == "rm":
@@ -107,7 +108,34 @@ func (s *scan) run(cmd string, depth int) {
 		case name == "eval":
 			s.run(strings.Join(args, " "), depth+1)
 		}
+		if s.cfg != nil {
+			for _, k := range cmdKeys(name, args) {
+				for _, a := range s.cfg.ToolActionsFor("Bash:" + k) {
+					s.add(a)
+				}
+			}
+		}
 	}
+}
+
+// cmdKeys 는 tool_actions 의 "Bash:<이름>" 과 견줄 이름이다. 명령 이름, npx 의 첫 인자(옵션 제외),
+// npm|yarn|pnpm|bun 의 run 다음 이름(npm 이 아니면 run 없이 바로 쓴 스크립트 이름도)이다.
+func cmdKeys(name string, args []string) []string {
+	keys := []string{name}
+	switch name {
+	case "npx":
+		if i := slices.IndexFunc(args, func(a string) bool { return !strings.HasPrefix(a, "-") }); i >= 0 {
+			keys = append(keys, args[i])
+		}
+	case "npm", "yarn", "pnpm", "bun":
+		switch {
+		case len(args) > 1 && args[0] == "run":
+			keys = append(keys, args[1])
+		case len(args) > 0 && name != "npm" && args[0] != "run":
+			keys = append(keys, args[0])
+		}
+	}
+	return keys
 }
 
 // pkgManager 는 npm·yarn·pnpm·bun 호출에서 테스트 실행과 코드 생성을 찾는다.
@@ -116,8 +144,6 @@ func (s *scan) pkgManager(name, w1, w2 string) {
 	switch {
 	case w1 == "test" || w1 == "t" || (w1 == "run" && isTest(w2)) || (name != "npm" && isTest(w1)):
 		s.add("test.run")
-	case (w1 == "run" && w2 == "codegen") || (name != "npm" && w1 == "codegen"):
-		s.add("code.generate")
 	case (name == "yarn" || name == "pnpm") && (w1 == "vitest" || w1 == "jest"):
 		s.add("test.run")
 	}

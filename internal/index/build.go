@@ -60,7 +60,7 @@ func Build(home string, items []*item.Item, cfg *config.Config, fingerprint stri
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return 0, err
 	}
-	tmp := filepath.Join(dir, fmt.Sprintf("index.db.tmp-%d", os.Getpid()))
+	tmp := filepath.Join(dir, fmt.Sprintf("index.db.tmp-%d-%d", os.Getpid(), time.Now().UnixNano()))
 	_ = os.Remove(tmp)
 	defer func() {
 		if err != nil {
@@ -205,4 +205,23 @@ func Stale(home string) bool {
 		return true
 	}
 	return fp != cur
+}
+
+// Ensure 는 색인이 낡았으면 항목을 다시 읽어 만든다.
+func Ensure(home string, cfg *config.Config) error {
+	if !Stale(home) {
+		return nil
+	}
+	fp, err := Fingerprint(home)
+	if err != nil {
+		return err
+	}
+	items, err := item.LoadDir(filepath.Join(home, "items"), cfg.ActionVocab())
+	if err != nil {
+		return err
+	}
+	if _, err := Build(home, items, cfg, fp); err != nil {
+		return fmt.Errorf("색인을 만들지 못함: %w", err)
+	}
+	return nil
 }
