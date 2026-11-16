@@ -13,21 +13,59 @@ heka는 AI 에이전트가 일하는 각 순간에, 그 순간에 필요한 컨�
 - `heka add`, `heka pending`: 항목을 등록하고, 비슷한 항목이 있어 대기함에 든 것을 결정합니다.
 - `heka why`, `heka list`, `heka stats`, `heka retire`: 원장과 항목을 들여다보고 항목을 은퇴시킵니다(아래 "원장과 항목 보기").
 - `heka mcp`: 조회·등록·표시를 위한 MCP 서버입니다(표준 입출력).
-- `heka hook`: Claude Code 훅 연결부입니다. 표준 입력의 훅 JSON 을 처리해 표준 출력에 JSON 을 냅니다. `--print-settings` 는 설정 파일의 `hooks` 에 넣을 JSON 조각을 출력하며, 설정 파일을 직접 고치지는 않습니다.
+- `heka hook`: Claude Code 훅 연결부입니다. 표준 입력의 훅 JSON 을 처리해 표준 출력에 JSON 을 냅니다. `--print-settings` 는 설정 파일의 `hooks` 에 넣을 JSON 조각을 출력하며(`--shadow` 를 더하면 그림자 방식용), 설정 파일을 직접 고치지는 않습니다.
 - `heka version`
 
-설정 예시는 `config.example.yaml` 입니다. 결과물 검사(`check`)는 아직 없습니다. 데이터 폴더는 `$HEKA_HOME` 이고, 없으면 `$HOME/.heka` 입니다(잠정).
+설정 예시는 `config.example.yaml` 입니다. 데이터 폴더는 `$HEKA_HOME` 이고, 없으면 `$HOME/.heka` 입니다(잠정).
 
 ## Claude Code 훅
 
-`heka hook` 은 `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `SubagentStart` 를 처리합니다. 작업 위치(`cwd`)는 설정의 `locations` 로 범위와 저장소 이름에 맞추고, 넣을 항목은 `additionalContext` 로 냅니다. 같은 세션에서 같은 항목은 한 번만 넣고(압축·`clear` 뒤에는 다시), 서브에이전트는 `agent_id` 별로 따로 셉니다. 위임 도구(`Agent`·`Task`)의 프롬프트는 세션 상태에 적어 두었다가 `SubagentStart` 에서 그 글로 항목을 고릅니다.
+`heka hook` 은 `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `SubagentStart`, `Stop` 을 처리합니다. 작업 위치(`cwd`)는 설정의 `locations` 로 범위와 저장소 이름에 맞추고, 넣을 항목은 `additionalContext` 로 냅니다. 같은 세션에서 같은 항목은 한 번만 넣고(압축·`clear` 뒤에는 다시), 서브에이전트는 `agent_id` 별로 따로 셉니다. 위임 도구(`Agent`·`Task`)의 프롬프트는 세션 상태에 적어 두었다가 `SubagentStart` 에서 그 글로 항목을 고릅니다.
 
 - 프롬프트가 시킨 동작("푸시해 줘")은 그 턴 동안의 허용으로 적힙니다. "이번 세션 동안" 같은 표현이 있으면 세션 동안 남고, "푸시하지 마" 는 허용을 거둡니다. 도구가 만든 프롬프트(`tool_prompt_prefixes` 로 시작하는 글)는 항목도 허용도 건드리지 않습니다.
 - `confirm: true` 항목은 그 동작(또는 상위 동작)에 허용이 없으면 `PreToolUse` 에서 확인을 요구하고(`permissionDecision: "ask"`), `always` 는 허용이 있어도 요구합니다.
-- 오류, 입력 해석 실패, 시간 초과(프롬프트·`SubagentStart` 25초, 나머지 5초)에서는 아무것도 출력하지 않고 종료 코드 0 으로 끝나며, 오류는 `$HEKA_HOME/ledger/errors.log` 에 한 줄 남습니다. 판단은 `$HEKA_HOME/ledger/YYYY-MM.jsonl` 에 한 줄씩 남습니다. 세션 상태는 `$HEKA_HOME/sessions/<session_id>.json` 이며, 등록할 때 인용을 대조하려고 훅 입력의 `transcript_path`(세션 기록 파일의 경로)만 거기에 남습니다. 프롬프트 글은 따로 복사해 두지 않습니다.
+- 오류, 입력 해석 실패, 시간 초과(프롬프트·`SubagentStart` 25초, 나머지 5초. 그림자 방식은 60초와 10초)에서는 아무것도 출력하지 않고 종료 코드 0 으로 끝나며, 오류는 `$HEKA_HOME/ledger/errors.log` 에 한 줄 남습니다. 판단은 `$HEKA_HOME/ledger/YYYY-MM.jsonl` 에 한 줄씩 남습니다. 세션 상태는 `$HEKA_HOME/sessions/<session_id>.json` 이며, 등록할 때 인용을 대조하려고 훅 입력의 `transcript_path`(세션 기록 파일의 경로)만 거기에 남습니다. 프롬프트 글은 따로 복사해 두지 않습니다.
 - 토큰 상한은 기본이 없습니다(설정의 `budgets` 에 순간별로 적으면 적용). 넣은 글의 토큰 어림은 원장 줄의 `tokens` 에 남으므로 "너무 많은지"는 그것으로 봅니다. 참고 항목은 한 번에 최대 3건입니다.
 
 훅 등록은 직접 합니다. `heka hook --print-settings` 가 낸 JSON 을 Claude Code 설정 파일의 `hooks` 에 넣으세요.
+
+## 결과물 검사
+
+항목에 `check` 를 붙이면 모델이 낸 결과물을 정규식과 견줍니다. 예: 커밋 메시지의 첫 줄을 50자 이내로 제한하는 항목입니다.
+
+```yaml
+---
+id: commit-title-short
+text: 커밋 메시지 첫 줄은 50자 이내로 쓴다.
+must: true
+when: {action: git.commit}
+about: [커밋 메시지]
+scope: [repo/sample-app]
+source: user
+quote: 지어낸 말
+check:
+  target: commit_message     # command · commit_message · pr_body · last_message
+  pattern: "^.{1,50}(\n|$)"  # 맞아야 하는 형식. not_pattern 은 있으면 안 되는 표현
+  mode: block                # block 은 막고, log 는 기록만 한다
+---
+```
+
+- 정규식은 Go 표준 문법(`regexp`)입니다. `pattern` 은 맞아야, `not_pattern` 은 맞지 않아야 통과합니다.
+- `command`, `commit_message`, `pr_body` 는 도구 호출 직전(`PreToolUse`)에 Bash 명령에서 뽑아 견줍니다. 검사할 항목은 그 호출의 동작과 `when` 이 맞고 범위·자격을 통과한 것이며, 이미 넣은 항목이어도 매번 검사합니다. 커밋 메시지는 `git commit` 의 `-m`(여럿이면 빈 줄로 이음), `-F -` 와 heredoc, `--amend -m` 에서, PR 본문은 `gh pr create|edit` 의 `--body`·`-b`, `--body-file -` 와 heredoc, `gh api … -f body=…` 에서 뽑습니다. 파일로 넘겨서 뽑을 수 없으면 그 검사는 하지 않고(원장에 `skip`) 통과시킵니다.
+- `mode: block` 이고 걸리면 `permissionDecision: "deny"` 로 막고, 사유에 그 항목의 글과 걸린 검사의 대상을 적어 모델이 고쳐서 다시 시도하게 합니다. 여러 항목이 걸리면 사유를 줄바꿈으로 이어 한 번에 냅니다. 같은 호출에 넣을 다른 항목은 `additionalContext` 로 함께 갑니다. 사람에게 묻지는 않습니다. `mode: log` 는 막지 않고 원장에만 남깁니다.
+- `last_message` 는 턴이 끝날 때(`Stop`) 입력의 `last_assistant_message` 를 견줍니다. 이 검사의 항목은 범위·자격을 통과해야 하고, `when` 은 `repo`·`agent` 만 봅니다. 걸리면 `{"decision": "block", "reason": …}` 로 모델이 한 번 더 돌게 합니다. 세션당 3회까지만이고, 같은 항목이 연속으로 걸리면 두 번까지만 막으며, 그 뒤에는 원장에만 남깁니다.
+- 식이 틀렸거나 글을 뽑다가 오류가 나면 통과시킵니다. 검사 때문에 막는 것은 위의 두 출력뿐이고, 훅이 실패해도 작업을 막지 않는다는 원칙은 그대로입니다.
+- 원장 줄의 `checks` 에 항목 id, 대상, 결과(`pass`·`fail`·`skip`), 막았는지가 남습니다. `heka stats` 는 "검사에 걸린 횟수"를, `heka list --violated N` 은 검사에 걸린 횟수와 `flag` 횟수의 합이 N 이상인 항목을 보입니다.
+
+## 그림자 방식
+
+다른 도구와 같은 세션에서 나란히 돌려 판정만 견주기 위한 방식입니다. 환경 변수 `HEKA_SHADOW=1` 이나 설정 `claude_code.shadow: true` 로 켭니다. 그림자 방식의 훅은 평소와 똑같이 고르고 기록하지만(선별, 세션 상태 갱신, 검사 판정, 원장) 표준 출력에는 아무것도 쓰지 않고 종료 코드는 0 입니다. 즉 주입도, 확인 요구도, 검사로 막기도 없습니다. 원장 줄에는 `shadow: true` 가 붙고 `heka why` 는 `(그림자)` 를 붙입니다. 훅을 백그라운드로 돌리는 것이 전제라 처리 시간 상한이 넉넉합니다(프롬프트 60초).
+
+```sh
+heka hook --print-settings --shadow   # 명령이 `HEKA_SHADOW=1 heka hook` 이고 각 훅에 "async": true 가 붙은 설정 조각
+```
+
+그림자 방식의 `checks` 에서 `blocked` 는 실제로 막았다는 뜻이 아니라 막았을 판정이라는 뜻이고, 턴 종료 검사의 횟수 한도도 평소처럼 셉니다.
 
 ## 조회: heka find
 
@@ -93,14 +131,14 @@ heka pending drop <대기 id>                   # 대기함에서 지움
 
 ```sh
 heka why [--session <id>] [--last N] [--id <항목 id>] [--json]
-heka list [--json] [--agent <종류>] [--must] [--flagged]
+heka list [--json] [--agent <종류>] [--must] [--flagged] [--violated N]
 heka stats <id> [--json]
 heka retire <id> --reason <글>
 ```
 
 - `why`: 최근 줄(기본 20)을 한 줄씩 보입니다. 시각(UTC), 이벤트, 동작, 넣은 항목과 이유, 빠진 항목(`id[단계: 사유]`), 토큰. `--id` 를 주면 그 항목이 넣어졌거나 빠진 줄만 봅니다. `--json` 은 원장 줄을 JSON 배열로 냅니다.
-- `list`: 항목의 id, 필수 여부, 조건(`when`), 범위, 확인 날짜, 기한. `--agent` 는 `when.agent` 에 그 종류가 걸린 항목, `--flagged` 는 원장에 `flag` 가 남은 항목만 보입니다. 검증에 실패한 항목은 빼고 알립니다.
-- `stats`: 주입 횟수, 마지막 주입 시각, 예산·중복·판정으로 빠진 횟수, `flag` 횟수와 마지막 사유. 훅의 줄만 셉니다(조회·등록 줄은 세지 않습니다).
+- `list`: 항목의 id, 필수 여부, 조건(`when`), 범위, 확인 날짜, 기한. `--agent` 는 `when.agent` 에 그 종류가 걸린 항목, `--flagged` 는 원장에 `flag` 가 남은 항목만, `--violated N` 은 검사에 걸린 횟수와 `flag` 횟수의 합이 N 이상인 항목만 보입니다. 검증에 실패한 항목은 빼고 알립니다.
+- `stats`: 주입 횟수, 마지막 주입 시각, 예산·중복·판정으로 빠진 횟수, 결과물 검사에 걸린 횟수, `flag` 횟수와 마지막 사유. 훅의 줄만 셉니다(조회·등록 줄은 세지 않습니다).
 - `retire`: 항목 파일을 지우고 색인을 다시 만들고 원장에 `retire` 한 줄(사유 포함)을 남깁니다. `$HEKA_HOME` 에 `.git` 이 있으면 사유를 메시지로 커밋을 시도하며, 실패해도 성공입니다.
 
 ## MCP 서버: heka mcp

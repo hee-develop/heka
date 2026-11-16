@@ -554,7 +554,7 @@ func TestLedger(t *testing.T) {
 }
 
 func TestSettings(t *testing.T) {
-	b, err := Settings()
+	b, err := Settings(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,7 +570,7 @@ func TestSettings(t *testing.T) {
 	if err := json.Unmarshal(b, &s); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]int{"SessionStart": 10, "UserPromptSubmit": 30, "PreToolUse": 10, "SubagentStart": 30}
+	want := map[string]int{"SessionStart": 10, "UserPromptSubmit": 30, "PreToolUse": 10, "SubagentStart": 30, "Stop": 10}
 	if len(s.Hooks) != len(want) {
 		t.Errorf("hooks = %s", b)
 	}

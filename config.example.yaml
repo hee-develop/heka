@@ -31,6 +31,8 @@ claude_code:
   scopes: [tool/claude-code]
   tool_prompt_prefixes: ["<task-notification", "<agent-message"]
   # transcripts: ["~/archive/sessions/**/*.jsonl"]
+  # shadow: 그림자 방식. true 면 훅이 똑같이 고르고 기록하되 아무것도 내보내지 않습니다(환경 변수 HEKA_SHADOW=1 과 같음).
+  # shadow: false
 
 # session_grant: 프롬프트에 이 표현이 함께 있으면 말로 한 허용이 그 턴이 아니라 세션 동안 남습니다(아래 값이 기본).
 # Go 정규식이고, 프롬프트 원문과 소문자로 바꾼 글에 대고 찾습니다.

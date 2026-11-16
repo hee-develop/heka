@@ -20,11 +20,11 @@ const usage = `사용법: heka <명령>
   add       항목을 등록한다 (비슷한 항목이 있으면 대기함)
   pending   대기함을 보고 결정한다 (fix|replace|keep|drop)
   why       원장의 최근 주입을 사람이 읽는 꼴로 보인다 (--session, --last, --id, --json)
-  list      항목 목록 (--json, --agent, --must, --flagged)
-  stats     항목 하나의 주입·탈락·flag 횟수 (--json)
+  list      항목 목록 (--json, --agent, --must, --flagged, --violated)
+  stats     항목 하나의 주입·탈락·검사에 걸림·flag 횟수 (--json)
   retire    항목을 지우고 색인과 원장을 갱신한다 (--reason 필수)
   mcp       MCP 서버를 표준 입출력으로 실행한다
-  hook      Claude Code 훅 이벤트를 처리한다 (--print-settings 는 등록할 hooks JSON 을 출력)
+  hook      Claude Code 훅 이벤트를 처리한다 (--print-settings [--shadow] 는 등록할 hooks JSON 을 출력)
   version   버전을 출력한다
   help      이 도움말을 출력한다
 `
