@@ -4,7 +4,7 @@ heka는 AI 에이전트가 일하는 각 순간에, 그 순간에 필요한 컨�
 
 ## 현재 상태
 
-설계 단계이며 구현은 일부만 있습니다. 동작하는 명령은 다음과 같습니다.
+설계와 첫 구현이 함께 있습니다. 훅, 조회·등록, MCP 서버, 결과물 검사, 그림자 방식은 구현돼 있고, 재현기(`heka replay`)는 아직 없습니다(만드는 중). 동작하는 명령은 다음과 같습니다.
 
 - `heka index [--check]`: 항목 파일과 설정을 읽어 검증하고 색인(SQLite)을 만듭니다.
 - `heka select`: 순간 하나에 넣을 항목을 골라 JSON 으로 보여 줍니다.
@@ -211,7 +211,7 @@ claude mcp add --scope user -e HEKA_HOME=/path/to/data heka -- /path/to/heka mcp
 
 ## 문서
 
-- [docs/design.md](docs/design.md): 설계 초안(정의, 요구사항, 구조)
+- [docs/design.md](docs/design.md): 설계(정의, 요구사항, 구조, 성공 조건)
 
 ## 빌드와 검사
 
