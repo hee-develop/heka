@@ -17,7 +17,7 @@ import (
 )
 
 // DefaultLimit 는 낱말 점수로 잡는 후보 수의 기본값이다.
-const DefaultLimit = 10
+const DefaultLimit = 5
 
 // Query 는 조회 하나다. Budget 이 0 이하이면 설정의 budgets.find 를 쓴다.
 type Query struct {

@@ -778,3 +778,72 @@ func TestNoBudgetByDefault(t *testing.T) {
 		t.Errorf("세션 시작: %d건, 탈락 %v", got, e3.droppedByBudget())
 	}
 }
+
+// judgeRows 는 원장에서 judges 가 남은 줄들의 judges 를 모두 모은다.
+func judgeRows(e *testEnv) (events []string, judges []map[string]any) {
+	for _, r := range e.ledgerRows() {
+		if js, ok := r["judges"].([]any); ok {
+			events = append(events, r["event"].(string))
+			for _, j := range js {
+				judges = append(judges, j.(map[string]any))
+			}
+		}
+	}
+	return
+}
+
+func TestLedgerJudges(t *testing.T) {
+	e := newEnv(t)
+	// 프롬프트: 판정 명령을 부르면 judges 가 남고 걸린 시간이 0 보다 크다. 서브에이전트 시작도 같다.
+	e.prompt("j1", "배포 점검 zeta-token")
+	e.tool("j1", "Agent", map[string]any{"subagent_type": "Explore", "prompt": "배포 점검 zeta-token"})
+	e.call(map[string]any{"hook_event_name": "SubagentStart", "session_id": "j1", "cwd": e.app(), "agent_id": "x", "agent_type": "Explore"})
+	events, js := judgeRows(e)
+	if !slices.Equal(events, []string{"UserPromptSubmit", "SubagentStart"}) {
+		t.Fatalf("judges 가 남은 줄 = %v", events)
+	}
+	for i, j := range js {
+		if j["id"] != "topic-deploy" || j["inject"] != true || j["ms"].(float64) <= 0 || j["error"] != nil || j["timeout"] != nil {
+			t.Errorf("judges[%d] = %v", i, j)
+		}
+	}
+	// 넣지 말라는 답도 남는다.
+	e.prompt("j2", "배포 점검 alpha")
+	_, js = judgeRows(e)
+	if last := js[len(js)-1]; last["inject"] != false || last["ms"].(float64) <= 0 {
+		t.Errorf("넣지 않음 = %v", last)
+	}
+}
+
+func TestLedgerJudgesErrorAndTimeout(t *testing.T) {
+	e := newEnv(t)
+	e.writeConfig(strings.ReplaceAll(cfgTmpl, "JUDGE", "/nonexistent/judge-cmd"))
+	e.prompt("je", "배포 점검")
+	_, js := judgeRows(e)
+	if len(js) != 1 || js[0]["error"] != true || js[0]["timeout"] != nil || js[0]["inject"] != false {
+		t.Errorf("오류 = %v", js)
+	}
+
+	e = newEnv(t)
+	slow := filepath.Join(t.TempDir(), "slow.sh")
+	if err := os.WriteFile(slow, []byte("#!/bin/sh\nsleep 3\necho '{\"inject\": true}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.writeConfig(strings.ReplaceAll(strings.ReplaceAll(cfgTmpl, "JUDGE", slow), "timeout: 5s", "timeout: 300ms"))
+	e.prompt("jt", "배포 점검")
+	_, js = judgeRows(e)
+	if len(js) != 1 || js[0]["error"] != true || js[0]["timeout"] != true || js[0]["ms"].(float64) < 300 {
+		t.Errorf("시간 초과 = %v", js)
+	}
+}
+
+func TestLedgerJudgesVotes(t *testing.T) {
+	e := newEnv(t)
+	cfg, _ := os.ReadFile(filepath.Join(e.home, "config.yaml"))
+	e.writeConfig(strings.ReplaceAll(string(cfg), "timeout: 5s", "timeout: 5s, votes: 2"))
+	e.prompt("jv", "배포 점검 zeta-token")
+	_, js := judgeRows(e)
+	if len(js) != 2 || js[0]["id"] != "topic-deploy" || js[1]["id"] != "topic-deploy" || js[0]["inject"] != true || js[1]["inject"] != true {
+		t.Errorf("votes 2 는 호출마다 한 건: %v", js)
+	}
+}

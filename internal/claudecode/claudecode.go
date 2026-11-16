@@ -268,6 +268,9 @@ func (h *handler) record(res selector.Result) {
 		h.row.Dropped = append(h.row.Dropped, ledger.Dropped{ID: d.ID, Stage: d.Stage, Reason: d.Reason})
 	}
 	h.row.Asked, h.row.Refused = res.Asked, res.Refused
+	for _, j := range res.Judges {
+		h.row.Judges = append(h.row.Judges, ledger.Judged{ID: j.ID, Inject: j.Inject, MS: j.MS, Error: j.Error, Timeout: j.Timeout})
+	}
 }
 
 // contextOut 은 넣을 항목을 "[heka]" 로 시작하는 글로 만든다. 항목이 없으면 nil 이다.
@@ -277,6 +280,9 @@ func contextOut(event string, injs []selector.Injection) *specific {
 	}
 	return &specific{HookEventName: event, AdditionalContext: contextText(injs)}
 }
+
+// ContextText 는 넣을 항목이 모델에게 실제로 전해지는 글이다. 토큰을 잴 때 쓴다.
+func ContextText(injs []selector.Injection) string { return contextText(injs) }
 
 func contextText(injs []selector.Injection) string {
 	var b strings.Builder

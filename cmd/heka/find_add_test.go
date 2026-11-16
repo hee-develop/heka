@@ -125,3 +125,32 @@ func TestPendingCommands(t *testing.T) {
 		t.Errorf("pending: %q", out)
 	}
 }
+
+// heka find 와 MCP 의 heka_find 모두 낱말 후보 기본값이 5 이고 --limit 로 바꿀 수 있다.
+func TestFindDefaultLimit(t *testing.T) {
+	home := newHome(t)
+	for i := 1; i <= 8; i++ {
+		id := "chk-" + string(rune('a'+i))
+		body := "---\nid: " + id + "\ntext: checklist item " + id + ".\nsource: doc\nabout: [없는주제" + id + "]\nscope: [personal]\n---\n"
+		if err := os.MkdirAll(filepath.Join(home, "items"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, "items", id+".md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func(s string) int { return strings.Count(s, "[chk-") }
+	_, out, _ := runCmd("find", "--budget", "100000", "checklist")
+	if n := count(out); n != 5 {
+		t.Errorf("find 기본: %d건\n%s", n, out)
+	}
+	_, out, _ = runCmd("find", "--budget", "100000", "--limit", "7", "checklist")
+	if n := count(out); n != 7 {
+		t.Errorf("find --limit 7: %d건", n)
+	}
+	p := startMCP(t, home)
+	txt, isErr := result(p.call(1, "heka_find", `{"query":"checklist","budget":100000}`))
+	if isErr || count(txt) != 5 {
+		t.Errorf("heka_find 기본: %d건 %v\n%s", count(txt), isErr, txt)
+	}
+}

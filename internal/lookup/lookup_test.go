@@ -167,3 +167,39 @@ func TestScopesFromCwd(t *testing.T) {
 		t.Errorf("작업 폴더: %v", got)
 	}
 }
+
+// 낱말 후보 수의 기본값은 5 이고 Limit 으로 바꿀 수 있다.
+func TestDefaultLimitIsFive(t *testing.T) {
+	if DefaultLimit != 5 {
+		t.Fatalf("DefaultLimit = %d", DefaultLimit)
+	}
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("global_scopes: [personal]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 8; i++ {
+		id := "chk-" + string(rune('a'+i))
+		put(t, home, id, "text: checklist item "+id+".\nsource: doc\nabout: [없는주제"+id+"]\nscope: [personal]\n", "")
+	}
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Ensure(home, cfg); err != nil {
+		t.Fatal(err)
+	}
+	ix, err := index.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ix.Close()
+	for _, c := range []struct{ limit, want int }{{0, 5}, {-1, 5}, {3, 3}, {8, 8}} {
+		r, err := Find(ix, cfg, Query{Text: "checklist", Limit: c.limit, Budget: 100000, Today: "2026-11-16"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(r.Items) != c.want {
+			t.Errorf("Limit %d: 항목 %d건, 기대 %d", c.limit, len(r.Items), c.want)
+		}
+	}
+}

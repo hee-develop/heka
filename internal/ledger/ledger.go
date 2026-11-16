@@ -43,6 +43,17 @@ type Checked struct {
 	Blocked bool   `json:"blocked"`
 }
 
+// Judged 는 판정 명령을 한 번 부른 기록이다. MS 는 걸린 시간(밀리초)이고,
+// Error 는 시간 초과를 포함해 답을 얻지 못했다는 뜻, Timeout 은 그중 시간 안에 끝나지 않았다는 뜻이다.
+// votes 가 2 이면 호출마다 한 건이 남는다.
+type Judged struct {
+	ID      string `json:"id"`
+	Inject  bool   `json:"inject"`
+	MS      int64  `json:"ms"`
+	Error   bool   `json:"error,omitempty"`
+	Timeout bool   `json:"timeout,omitempty"`
+}
+
 // Row 는 원장 한 줄이다.
 type Row struct {
 	TS         string     `json:"ts"`
@@ -63,6 +74,7 @@ type Row struct {
 	Reason     string     `json:"reason,omitempty"` // retire 의 사유
 	Prompt     string     `json:"prompt,omitempty"`
 	Checks     []Checked  `json:"checks,omitempty"` // 결과물 검사 결과
+	Judges     []Judged   `json:"judges,omitempty"` // 판정 명령을 부른 기록
 	Shadow     bool       `json:"shadow,omitempty"` // 그림자 방식으로 돈 줄(아무것도 내보내지 않았다)
 }
 
