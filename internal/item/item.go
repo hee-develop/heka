@@ -263,14 +263,15 @@ func (it *Item) validateCheck(add func(level, format string, a ...any)) {
 	}
 }
 
-// checkActions 는 설정의 동작 어휘에 없는 when.action 에 경고를 단다. 어휘가 비어 있으면 아무것도 하지 않는다.
+// checkActions 는 어휘(설정의 actions·tool_actions 가 아는 이름과 해석기가 내는 이름)에 없는 when.action 에 경고를 단다.
+// 어휘가 비어 있으면 아무것도 하지 않는다. 어휘 만들기는 action.Vocab 이 한다.
 func (it *Item) checkActions(vocab map[string]bool) {
 	if len(vocab) == 0 {
 		return
 	}
 	for _, a := range it.When.Action {
 		if !vocab[a] {
-			it.Problems = append(it.Problems, Problem{filepath.Base(it.File), Warn, fmt.Sprintf("설정의 동작 어휘에 없는 when.action: %s", a)})
+			it.Problems = append(it.Problems, Problem{filepath.Base(it.File), Warn, fmt.Sprintf("어느 것도 이 동작을 내지 않음: 설정 actions·tool_actions 에도, 해석기에도 없는 when.action: %s", a)})
 		}
 	}
 }
@@ -304,7 +305,7 @@ func splitFrontMatter(s string) (head, body string, ok bool) {
 }
 
 // LoadDir 는 dir/*.md 만 읽는다(하위 폴더는 읽지 않는다). 폴더가 없으면 빈 목록이다.
-// vocab 은 설정의 동작 어휘이며 비어 있으면 어휘 검사를 하지 않는다. 결과는 파일 이름순이다.
+// vocab 은 when.action 에 쓸 수 있는 동작 이름 전체(action.Vocab)이며 비어 있으면 어휘 검사를 하지 않는다. 결과는 파일 이름순이다.
 func LoadDir(dir string, vocab map[string]bool) ([]*Item, error) {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.md"))
 	if err != nil {

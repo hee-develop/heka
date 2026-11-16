@@ -27,13 +27,6 @@ type Resolved struct {
 	Agent   string   `json:"agent"`   // Task 류 호출의 에이전트 종류
 }
 
-// 아래 이름은 새 체계에 없는 것도 있다. 기존 판정이 내던 이름을 그대로 둔 것이다.
-const (
-	actCodeEdit  = "code.edit"
-	actDocEdit   = "doc.edit"
-	actBashOther = "bash.other" // 동작이 잡히지 않은 Bash 호출
-)
-
 var editTools = map[string]bool{"Edit": true, "Write": true, "MultiEdit": true, "NotebookEdit": true}
 
 // docExts 에 있는 확장자의 편집은 doc.edit, 나머지는 code.edit 이다.
@@ -64,10 +57,10 @@ func Resolve(c Call, cfg *config.Config) Resolved {
 			r.Paths = append(r.Paths, p)
 		}
 	case c.Tool == "Agent" || c.Tool == "Task":
-		add("agent.delegate")
+		add(actAgentDelegate)
 		r.Agent, _ = c.Input["subagent_type"].(string)
 	case c.Tool == "Skill":
-		add("skill.run")
+		add(actSkillRun)
 		full, _ := c.Input["skill"].(string)
 		if full == "" {
 			full, _ = c.Input["name"].(string)
@@ -84,7 +77,7 @@ func Resolve(c Call, cfg *config.Config) Resolved {
 			r.Paths = paths
 		}
 	case c.Tool == "Workflow":
-		add("workflow.run")
+		add(actWorkflowRun)
 	default:
 		m := mcpRe.FindStringSubmatch(c.Tool)
 		if m == nil || m[2] == "authenticate" || m[2] == "complete_authentication" {
@@ -150,15 +143,15 @@ func mcpActions(server, method string) []string {
 	write := mcpIsWrite(server, method)
 	if googleSrvRe.MatchString(server) {
 		if gw := slices.Contains(gwsMcpWrite, method); gw {
-			out, write = append(out, "gws.write"), true
+			out, write = append(out, actGwsWrite), true
 		} else {
-			out = append(out, "gws.read")
+			out = append(out, actGwsRead)
 		}
 	}
 	if write {
-		return append(out, "mcp.write")
+		return append(out, actMCPWrite)
 	}
-	return append(out, "mcp.read")
+	return append(out, actMCPRead)
 }
 
 // mcpIsWrite 는 메서드 이름이 쓰기 동사로 시작하고 그 뒤가 끝·`_`·`-`·숫자·대문자일 때 참이다.

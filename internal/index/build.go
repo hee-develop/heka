@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hee-develop/heka/internal/action"
 	"github.com/hee-develop/heka/internal/config"
 	"github.com/hee-develop/heka/internal/item"
 
@@ -216,7 +217,7 @@ func Ensure(home string, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	items, err := item.LoadDir(filepath.Join(home, "items"), cfg.ActionVocab())
+	items, err := item.LoadDir(filepath.Join(home, "items"), action.Vocab(cfg))
 	if err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hee-develop/heka/internal/action"
 	"github.com/hee-develop/heka/internal/config"
 	"github.com/hee-develop/heka/internal/item"
 	"github.com/hee-develop/heka/internal/ledger"
@@ -262,7 +263,7 @@ func runList(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "heka list:", err)
 		return 1
 	}
-	items, err := item.LoadDir(filepath.Join(home, "items"), cfg.ActionVocab())
+	items, err := item.LoadDir(filepath.Join(home, "items"), action.Vocab(cfg))
 	if err != nil {
 		fmt.Fprintln(stderr, "heka list:", err)
 		return 1

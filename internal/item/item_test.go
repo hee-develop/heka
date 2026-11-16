@@ -134,6 +134,9 @@ func TestWarnings(t *testing.T) {
 	if !has(items[0].Problems, Warn, "git.comit") || !items[0].Valid() {
 		t.Errorf("어휘 밖 동작은 warn: %v", items[0].Problems)
 	}
+	if !has(items[0].Problems, Warn, "어느 것도 이 동작을 내지 않음: 설정 actions·tool_actions 에도, 해석기에도 없는 when.action: git.comit") {
+		t.Errorf("경고 글: %v", items[0].Problems)
+	}
 	items, _ = LoadDir(dir, nil)
 	if len(items[0].Problems) != 0 {
 		t.Errorf("어휘가 비면 경고 없음: %v", items[0].Problems)
