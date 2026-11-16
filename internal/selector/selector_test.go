@@ -485,3 +485,37 @@ func TestConfirmFieldsAndSeen(t *testing.T) {
 	r = sel1(t, ix, cfg, m)
 	wantIDs(t, r)
 }
+
+// Gather 는 예산을 적용하지 않은 후보를 돌려주고, Fit 으로 한 번에 예산을 적용한 결과는 Select 와 같다.
+func TestGatherThenFit(t *testing.T) {
+	items := map[string]string{
+		"a-ref":  "source: doc\ntext: bbbbbbbbb\nmust: true\nwhen: {action: x.b}\nabout: [b]\nscope: [personal]",
+		"b-must": u + "text: aaaaaaaaa\nmust: true\nwhen: {action: x.b}\nabout: [b]\nscope: [personal]",
+		"c-must": u + "text: ccccccccc\nmust: true\nwhen: {action: x.b}\nabout: [b]\nscope: [personal]",
+	}
+	ix, cfg := env(t, items, testCfg)
+	cfg.Budgets["tool"] = 7
+	m := Moment{Kind: "tool", Action: "x.b"}
+	g, err := Gather(context.Background(), ix, cfg, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Injections) != 3 || g.Injections[0].Text != "bbbbbbbbb" || len(g.Drops) != 0 {
+		t.Fatalf("Gather 는 예산 전 후보를 돌려줘야 함: %+v", g)
+	}
+	// 후보를 두 번 모아 이어 붙여도 상한은 한 번만 적용된다.
+	both := append(slices.Clone(g.Injections), Injection{ID: "d-more", Text: "dddddddddd", Must: true})
+	kept, drops := Fit(cfg, "tool", both, nil)
+	var ids []string
+	for _, k := range kept {
+		ids = append(ids, k.ID)
+	}
+	if !slices.Equal(ids, []string{"b-must", "c-must"}) || len(drops) != 2 || drops[0].Stage != "예산" {
+		t.Errorf("kept %v drops %v", ids, drops)
+	}
+	want := sel1(t, ix, cfg, m)
+	gk, _ := Fit(cfg, "tool", g.Injections, nil)
+	if !reflect.DeepEqual(gk, want.Injections) {
+		t.Errorf("Select 와 같아야 함: %+v vs %+v", gk, want.Injections)
+	}
+}

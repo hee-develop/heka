@@ -78,7 +78,13 @@ func (s *scan) run(cmd string, depth int) {
 			switch w2 {
 			case "create", "merge", "review":
 				s.add("pr." + w2)
+			case "edit":
+				if !slices.Contains(args, "--help") && !slices.Contains(args, "-h") {
+					s.add("pr.edit")
+				}
 			}
+		case name == "gh" && w1 == "api":
+			s.ghAPI(args[1:])
 		case name == "vitest" || name == "jest":
 			s.add("test.run")
 		case name == "npm" || name == "yarn" || name == "pnpm" || name == "bun":
@@ -114,6 +120,70 @@ func (s *scan) run(cmd string, depth int) {
 					s.add(a)
 				}
 			}
+		}
+	}
+}
+
+// ghValueOpts 는 gh api 에서 값을 따로 받는 옵션이다. 엔드포인트를 찾을 때 값을 건너뛰는 데 쓴다.
+var ghValueOpts = []string{"-H", "--header", "-q", "--jq", "-t", "--template", "--hostname", "--cache", "-p", "--preview", "--input"}
+
+// ghFieldOpts 는 값이 있으면 요청 본문이 되는(메서드를 정하지 않으면 POST 로 가는) 옵션이다.
+var ghFieldOpts = []string{"-f", "-F", "--field", "--raw-field", "--input"}
+
+var ghPullNumRe = regexp.MustCompile(`^\d+$`)
+
+// ghAPI 는 gh api 호출에서 PR 을 만들거나 고치는 호출을 찾는다. args 는 "api" 뒤의 단어다.
+// 엔드포인트 경로가 pulls 로 끝나고 메서드가 POST 이면(메서드가 없을 때는 필드가 있어 POST 로 가면) pr.create,
+// 경로에 pulls/<번호> 가 있고 메서드가 PATCH 이면 pr.edit 이다. 메서드가 없거나 GET 이면 아무것도 내지 않는다.
+func (s *scan) ghAPI(args []string) {
+	var endpoint, method string
+	hasField := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		next := func() string {
+			if i+1 < len(args) {
+				i++
+				return args[i]
+			}
+			return ""
+		}
+		switch {
+		case a == "-X" || a == "--method":
+			method = next()
+		case strings.HasPrefix(a, "--method="):
+			method = strings.TrimPrefix(a, "--method=")
+		case strings.HasPrefix(a, "-X") && !strings.HasPrefix(a, "--"):
+			method = strings.TrimPrefix(a, "-X")
+		case slices.Contains(ghFieldOpts, a):
+			hasField = true
+			next()
+		case slices.ContainsFunc(ghFieldOpts, func(o string) bool {
+			return strings.HasPrefix(a, o+"=") || (len(o) == 2 && strings.HasPrefix(a, o))
+		}):
+			hasField = true // -fkey=value, --field=key=value
+		case slices.Contains(ghValueOpts, a):
+			next()
+		case strings.HasPrefix(a, "-"):
+		case endpoint == "":
+			endpoint = a
+		}
+	}
+	if i := strings.IndexAny(endpoint, "?#"); i >= 0 {
+		endpoint = endpoint[:i]
+	}
+	segs := strings.FieldsFunc(endpoint, func(r rune) bool { return r == '/' })
+	method = strings.ToUpper(method)
+	if method == "" && hasField {
+		method = "POST"
+	}
+	if len(segs) > 0 && segs[len(segs)-1] == "pulls" && method == "POST" {
+		s.add("pr.create")
+		return
+	}
+	for i := 0; i+1 < len(segs); i++ {
+		if segs[i] == "pulls" && ghPullNumRe.MatchString(segs[i+1]) && method == "PATCH" {
+			s.add("pr.edit")
+			return
 		}
 	}
 }

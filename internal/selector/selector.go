@@ -81,8 +81,20 @@ type sel struct {
 	refuse []string
 }
 
-// Select 는 순간 하나에 넣을 항목을 고른다.
+// Select 는 순간 하나에 넣을 항목을 고른다. 예산까지 적용한 결과다.
 func Select(ctx context.Context, ix *index.Index, cfg *config.Config, m Moment) (Result, error) {
+	res, err := Gather(ctx, ix, cfg, m)
+	if err != nil {
+		return Result{}, err
+	}
+	res.Injections, res.Drops = Fit(cfg, m.Kind, res.Injections, res.Drops)
+	return res, nil
+}
+
+// Gather 는 Select 에서 예산과 형태 단계만 빼고 한 결과다. Injections 는 예산 전의 후보이고
+// Text 는 다듬기만 한 본문이다(비필수 항목의 "(id)" 꼬리도 아직 없다).
+// 한 번의 도구 호출이 여러 동작·경로로 갈라져 선별기를 여러 번 부를 때는, 모은 후보 전체에 Fit 을 한 번만 부른다.
+func Gather(ctx context.Context, ix *index.Index, cfg *config.Config, m Moment) (Result, error) {
 	s := &sel{ctx: ctx, ix: ix, cfg: cfg, m: m, scopes: map[string]bool{}, got: map[string]bool{}}
 	for _, sc := range m.Scopes {
 		for _, a := range cfg.ScopeClosure(sc) {
@@ -111,7 +123,9 @@ func Select(ctx context.Context, ix *index.Index, cfg *config.Config, m Moment) 
 		return Result{}, err
 	}
 	res := Result{Injections: []Injection{}, Drops: s.drops, Asked: s.asked, Refused: s.refuse}
-	s.fit(&res)
+	for _, c := range s.cands {
+		res.Injections = append(res.Injections, Injection{c.r.ID, strings.TrimSpace(c.r.Text), c.must, c.why, c.r.Confirm, c.r.Hash})
+	}
 	if res.Drops == nil {
 		res.Drops = []Drop{}
 	}
@@ -445,33 +459,39 @@ func (s *sel) noActionMatch(orEmpty bool, kinds ...string) func(*index.Record) s
 // tokens 는 글의 토큰 수를 (UTF-8 바이트 수 + 2) / 3 으로 어림한다.
 func tokens(s string) int { return (len(s) + 2) / 3 }
 
-// fit 은 예산과 형태 단계다. 상한을 넘으면 필수 항목을 먼저 남기고 같은 종류 안에서는 원래 순서대로 남긴다.
-func (s *sel) fit(res *Result) {
-	budget := s.cfg.Budgets[s.m.Kind]
-	texts := make([]string, len(s.cands))
-	for i, c := range s.cands {
-		texts[i] = strings.TrimSpace(c.r.Text)
-		if !c.must {
-			texts[i] += " (" + c.r.ID + ")"
+// Fit 은 예산과 형태 단계다. injs 는 Gather 가 돌려준 후보를 원래 순서대로 모은 것이다.
+// 상한(cfg.Budgets[kind])을 넘으면 필수 항목을 먼저 남기고 같은 종류 안에서는 원래 순서대로 남기며,
+// 안 들어가는 항목은 건너뛰고 다음 항목을 시도한다. 남긴 항목은 비필수에 "(id)" 꼬리를 붙인 본문을 갖고,
+// 빠진 항목은 예산 단계의 탈락으로 drops 뒤에 덧붙여 돌려준다.
+func Fit(cfg *config.Config, kind string, injs []Injection, drops []Drop) ([]Injection, []Drop) {
+	budget := cfg.Budgets[kind]
+	texts := make([]string, len(injs))
+	for i, c := range injs {
+		texts[i] = c.Text
+		if !c.Must {
+			texts[i] += " (" + c.ID + ")"
 		}
 	}
-	keep := make([]bool, len(s.cands))
+	keep := make([]bool, len(injs))
 	used := 0
 	for _, must := range []bool{true, false} {
-		for i, c := range s.cands {
-			if c.must != must {
+		for i, c := range injs {
+			if c.Must != must {
 				continue
 			}
 			if t := tokens(texts[i]); used+t <= budget {
 				keep[i], used = true, used+t
 			} else {
-				res.Drops = append(res.Drops, Drop{c.r.ID, "예산", fmt.Sprintf("%s 순간의 상한 %d토큰을 넘음", s.m.Kind, budget)})
+				drops = append(drops, Drop{c.ID, "예산", fmt.Sprintf("%s 순간의 상한 %d토큰을 넘음", kind, budget)})
 			}
 		}
 	}
-	for i, c := range s.cands {
+	out := []Injection{}
+	for i, c := range injs {
 		if keep[i] {
-			res.Injections = append(res.Injections, Injection{c.r.ID, texts[i], c.must, c.why, c.r.Confirm, c.r.Hash})
+			c.Text = texts[i]
+			out = append(out, c)
 		}
 	}
+	return out, drops
 }
