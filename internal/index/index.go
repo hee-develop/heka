@@ -95,6 +95,11 @@ func (x *Index) ByAction(action string) ([]string, error) {
 	return x.ByWhen("action", slices.Sorted(maps.Keys(anc))...)
 }
 
+// WithCheck 는 결과물 검사(check)가 있는 항목 id 를 정렬해 돌려준다.
+func (x *Index) WithCheck() ([]string, error) {
+	return x.strings(`SELECT id FROM item WHERE check_json<>'' ORDER BY id`)
+}
+
 // ByWhen 은 when 의 그 종류에 값 중 하나가 적힌 항목 id 를 정렬해 돌려준다.
 func (x *Index) ByWhen(kind string, values ...string) ([]string, error) {
 	if len(values) == 0 {

@@ -71,11 +71,25 @@ func whyLine(r ledger.Row) string {
 		}
 		line += " | 뺌: " + strings.Join(out, "; ")
 	}
+	if len(r.Checks) > 0 {
+		var cs []string
+		for _, c := range r.Checks {
+			t := c.ID + " " + c.Target + " " + c.Result
+			if c.Blocked {
+				t += "(막음)"
+			}
+			cs = append(cs, t)
+		}
+		line += " | 검사: " + strings.Join(cs, "; ")
+	}
 	if r.Reason != "" {
 		line += " | 사유: " + oneLine(r.Reason)
 	}
 	if r.Tokens > 0 {
 		line += fmt.Sprintf(" | 토큰 %d", r.Tokens)
+	}
+	if r.Shadow {
+		line += " (그림자)"
 	}
 	return line
 }
@@ -135,6 +149,8 @@ type listEntry struct {
 	Checked string    `json:"checked"`
 	Expires string    `json:"expires"`
 	Flagged bool      `json:"flagged"`
+	// Violations 는 검사에 걸린 횟수와 flag 횟수의 합이다.
+	Violations int `json:"violations"`
 }
 
 func dash(s string) string {
@@ -180,22 +196,40 @@ func flagStats(rows []ledger.Row) (count map[string]int, lastReason map[string]s
 	return
 }
 
+// checkFailCounts 는 원장에서 결과물 검사에 걸린(fail) 횟수를 항목 id 별로 센다.
+func checkFailCounts(rows []ledger.Row) map[string]int {
+	n := map[string]int{}
+	for _, r := range rows {
+		if !r.IsHook() {
+			continue
+		}
+		for _, c := range r.Checks {
+			if c.Result == "fail" {
+				n[c.ID]++
+			}
+		}
+	}
+	return n
+}
+
 // runList 는 `heka list` 를 실행한다. 항목 파일을 훑어 목록으로 보인다.
 func runList(args []string, stdout, stderr io.Writer) int {
 	var agent string
 	var must, flagged, asJSON bool
+	var violated int
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.BoolVar(&asJSON, "json", false, "JSON 으로 출력")
 	fs.StringVar(&agent, "agent", "", "when.agent 에 이 종류가 걸린 항목만")
 	fs.BoolVar(&must, "must", false, "필수 항목만")
 	fs.BoolVar(&flagged, "flagged", false, "원장에 flag 가 남은 항목만")
+	fs.IntVar(&violated, "violated", 0, "검사에 걸린 횟수와 flag 횟수의 합이 N 이상인 항목만")
 	pos, err := parseMixed(fs, args)
 	if err != nil {
 		return 2
 	}
-	if len(pos) > 0 {
-		fmt.Fprintln(stderr, "heka list: 사용법: heka list [--json] [--agent <종류>] [--must] [--flagged]")
+	if len(pos) > 0 || violated < 0 {
+		fmt.Fprintln(stderr, "heka list: 사용법: heka list [--json] [--agent <종류>] [--must] [--flagged] [--violated N]")
 		return 2
 	}
 	home, err := config.Home()
@@ -213,15 +247,17 @@ func runList(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "heka list:", err)
 		return 1
 	}
-	flags, _ := flagStats(ledger.ReadAll(home))
+	rows := ledger.ReadAll(home)
+	flags, _ := flagStats(rows)
+	fails := checkFailCounts(rows)
 	out, skipped := []listEntry{}, 0
 	for _, it := range items {
 		if !it.Valid() {
 			skipped++
 			continue
 		}
-		e := listEntry{ID: it.ID, Must: it.Must, When: it.When, Scope: it.Scope, Checked: string(it.Checked), Expires: string(it.Expires), Flagged: flags[it.ID] > 0}
-		if (must && !e.Must) || (flagged && !e.Flagged) || (agent != "" && !contains(it.When.Agent, agent)) {
+		e := listEntry{ID: it.ID, Must: it.Must, When: it.When, Scope: it.Scope, Checked: string(it.Checked), Expires: string(it.Expires), Flagged: flags[it.ID] > 0, Violations: fails[it.ID] + flags[it.ID]}
+		if (must && !e.Must) || (flagged && !e.Flagged) || (violated > 0 && e.Violations < violated) || (agent != "" && !contains(it.When.Agent, agent)) {
 			continue
 		}
 		out = append(out, e)
@@ -258,6 +294,7 @@ type statsResult struct {
 	LastInjected string         `json:"last_injected,omitempty"`
 	Dropped      map[string]int `json:"dropped"`
 	Flags        int            `json:"flags"`
+	CheckFails   int            `json:"check_fails"` // 결과물 검사에 걸린 횟수
 	LastFlag     string         `json:"last_flag_reason,omitempty"`
 }
 
@@ -282,6 +319,13 @@ func computeStats(rows []ledger.Row, id string) statsResult {
 					if _, ok := st.Dropped[d.Stage]; ok {
 						st.Dropped[d.Stage]++
 					}
+				}
+			}
+		}
+		if r.IsHook() {
+			for _, c := range r.Checks {
+				if c.ID == id && c.Result == "fail" {
+					st.CheckFails++
 				}
 			}
 		}
@@ -330,7 +374,7 @@ func runStats(args []string, stdout, stderr io.Writer) int {
 	if st.LastInjected != "" {
 		last = st.LastInjected
 	}
-	fmt.Fprintf(stdout, "%s\n  주입 %d회, 마지막 주입 %s\n  빠진 횟수: 예산 %d, 중복 %d, 판정 %d\n  flag %d회", st.ID, st.Injected, last, st.Dropped["예산"], st.Dropped["중복"], st.Dropped["판정"], st.Flags)
+	fmt.Fprintf(stdout, "%s\n  주입 %d회, 마지막 주입 %s\n  빠진 횟수: 예산 %d, 중복 %d, 판정 %d\n  검사에 걸린 횟수 %d회\n  flag %d회", st.ID, st.Injected, last, st.Dropped["예산"], st.Dropped["중복"], st.Dropped["판정"], st.CheckFails, st.Flags)
 	if st.LastFlag != "" {
 		fmt.Fprintf(stdout, ", 마지막 사유: %s", oneLine(st.LastFlag))
 	}

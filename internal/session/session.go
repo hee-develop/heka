@@ -35,10 +35,12 @@ type Delegation struct {
 
 // State 는 세션 하나의 상태다. Shown 의 키는 주체의 agent_id 이고 메인은 빈 문자열이다.
 type State struct {
-	Shown      map[string][]string `json:"shown"`                // 주체 → 이미 넣은 항목 id
-	Grants     map[string]string   `json:"grants"`               // 동작 → turn|session
-	Pending    []Delegation        `json:"pending"`              // 기다리는 위임. 오래된 것이 앞
-	Transcript string              `json:"transcript,omitempty"` // 이 세션의 기록 파일 경로. 등록할 때 인용 대조에 쓴다(프롬프트 글은 남기지 않는다)
+	Shown      map[string][]string `json:"shown"`                 // 주체 → 이미 넣은 항목 id
+	Grants     map[string]string   `json:"grants"`                // 동작 → turn|session
+	Pending    []Delegation        `json:"pending"`               // 기다리는 위임. 오래된 것이 앞
+	StopBlocks int                 `json:"stop_blocks,omitempty"` // 턴 종료 검사가 되돌린 횟수
+	StopStreak map[string]int      `json:"stop_streak,omitempty"` // 항목 → 직전 턴 종료까지 연속으로 되돌린 횟수
+	Transcript string              `json:"transcript,omitempty"`  // 이 세션의 기록 파일 경로. 등록할 때 인용 대조에 쓴다(프롬프트 글은 남기지 않는다)
 }
 
 // RecentTranscripts 는 since 이후에 고쳐진 세션 상태 파일들에 적힌 세션 기록 파일의 경로를 모은다.
@@ -121,6 +123,36 @@ func (s *State) TakeDelegation(agent string) (d Delegation, ok bool) {
 	d = s.Pending[i]
 	s.Pending = slices.Delete(s.Pending, i, i+1)
 	return d, true
+}
+
+// 턴 종료 검사가 한 세션에서 되돌릴 수 있는 최대 횟수와, 같은 항목이 연속으로 되돌릴 수 있는 최대 횟수다.
+const (
+	MaxStopBlocks = 3
+	MaxStopRun    = 2
+)
+
+// StopDecide 는 턴 종료 검사에 걸린 block 항목 id 들 가운데 이번에 되돌릴 것을 정하고 횟수를 적는다.
+// 세션 전체로 MaxStopBlocks 회까지만 되돌리고, 직전 턴 종료에서도 되돌린 항목이 이미 MaxStopRun 번 연속이면 되돌리지 않는다.
+// 되돌리지 않은 항목은 limited 로 돌려준다. 되돌린 항목이 없으면 연속 기록을 지운다.
+func (s *State) StopDecide(ids []string) (blocked, limited []string) {
+	next := map[string]int{}
+	if s.StopBlocks < MaxStopBlocks {
+		for _, id := range ids {
+			if s.StopStreak[id] >= MaxStopRun {
+				limited = append(limited, id)
+				continue
+			}
+			blocked = append(blocked, id)
+			next[id] = s.StopStreak[id] + 1
+		}
+	} else {
+		limited = ids
+	}
+	if len(blocked) > 0 {
+		s.StopBlocks++
+	}
+	s.StopStreak = next
+	return blocked, limited
 }
 
 func empty() *State {

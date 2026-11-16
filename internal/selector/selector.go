@@ -44,6 +44,7 @@ type Injection struct {
 	Why     string `json:"why"`
 	Confirm string `json:"confirm"` // false|true|always
 	Hash    string `json:"hash"`    // 항목의 내용 해시
+	Check   string `json:"-"`       // 항목의 결과물 검사(JSON). 없으면 빈 값
 }
 
 // Drop 은 탈락한 항목이다. Stage 는 범위|자격|일치|중복|예산|판정 이다.
@@ -116,7 +117,7 @@ func Gather(ctx context.Context, ix *index.Index, cfg *config.Config, m Moment) 
 	}
 	res := Result{Injections: []Injection{}, Drops: s.drops, Asked: s.asked, Refused: s.refuse}
 	for _, c := range s.cands {
-		res.Injections = append(res.Injections, Injection{c.r.ID, strings.TrimSpace(c.r.Text), c.must, c.why, c.r.Confirm, c.r.Hash})
+		res.Injections = append(res.Injections, Injection{c.r.ID, strings.TrimSpace(c.r.Text), c.must, c.why, c.r.Confirm, c.r.Hash, c.r.CheckJSON})
 	}
 	if res.Drops == nil {
 		res.Drops = []Drop{}

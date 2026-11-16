@@ -33,6 +33,16 @@ type Dropped struct {
 	Reason string `json:"reason"`
 }
 
+// Checked 는 결과물 검사 하나의 결과다. Result 는 pass|fail|skip 이고,
+// skip 은 검사할 글을 뽑지 못했거나 식을 쓸 수 없어 판정하지 않았다는 뜻이다.
+// Blocked 는 막는 판정이 났는가(그림자 방식에서는 실제로 막지는 않았지만 막았을 판정을 뜻한다).
+type Checked struct {
+	ID      string `json:"id"`
+	Target  string `json:"target"`
+	Result  string `json:"result"`
+	Blocked bool   `json:"blocked"`
+}
+
 // Row 는 원장 한 줄이다.
 type Row struct {
 	TS         string     `json:"ts"`
@@ -52,12 +62,14 @@ type Row struct {
 	Tokens     int        `json:"tokens,omitempty"` // 넣은 글의 토큰 어림
 	Reason     string     `json:"reason,omitempty"` // retire 의 사유
 	Prompt     string     `json:"prompt,omitempty"`
+	Checks     []Checked  `json:"checks,omitempty"` // 결과물 검사 결과
+	Shadow     bool       `json:"shadow,omitempty"` // 그림자 방식으로 돈 줄(아무것도 내보내지 않았다)
 }
 
 // IsHook 은 훅 이벤트(항목을 실제로 넣거나 뺀 판단)의 줄인가. find·add·flag·retire 등의 줄은 아니다.
 func (r Row) IsHook() bool {
 	switch r.Event {
-	case "SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart":
+	case "SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart", "Stop":
 		return true
 	}
 	return false

@@ -7,11 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/hee-develop/heka/internal/action"
+	"github.com/hee-develop/heka/internal/check"
 	"github.com/hee-develop/heka/internal/config"
 	"github.com/hee-develop/heka/internal/index"
 	"github.com/hee-develop/heka/internal/ledger"
@@ -20,9 +23,12 @@ import (
 )
 
 // 처리 전체의 시간 상한이다. 프롬프트와 SubagentStart 는 판정 명령을 부를 수 있어 길다.
+// 그림자 방식은 훅을 백그라운드로 돌리므로 상한을 넉넉히 둔다.
 var (
-	limitLong  = 25 * time.Second
-	limitShort = 5 * time.Second
+	limitLong        = 25 * time.Second
+	limitShort       = 5 * time.Second
+	limitLongShadow  = 60 * time.Second
+	limitShortShadow = 10 * time.Second
 )
 
 const (
@@ -44,6 +50,9 @@ type Input struct {
 	Prompt         string          `json:"prompt"`
 	ToolName       string          `json:"tool_name"`
 	ToolInput      json.RawMessage `json:"tool_input"`
+
+	LastAssistantMessage string `json:"last_assistant_message"`
+	StopHookActive       bool   `json:"stop_hook_active"`
 }
 
 // specific 은 hookSpecificOutput 이다.
@@ -55,12 +64,20 @@ type specific struct {
 }
 
 type handler struct {
-	home string
-	in   Input
-	cfg  *config.Config
-	ix   *index.Index
-	now  time.Time
-	row  ledger.Row
+	home   string
+	in     Input
+	cfg    *config.Config
+	cfgErr error
+	ix     *index.Index
+	now    time.Time
+	row    ledger.Row
+	shadow bool
+	top    map[string]any // hookSpecificOutput 밖의 최상위 출력(턴 종료의 block)
+}
+
+// shadowOn 은 그림자 방식인가. 환경 변수 HEKA_SHADOW=1 이나 설정 claude_code.shadow 가 켜 둔다.
+func shadowOn(cfg *config.Config) bool {
+	return os.Getenv("HEKA_SHADOW") == "1" || (cfg != nil && cfg.ClaudeCode.Shadow)
 }
 
 // Run 은 표준 입력의 훅 JSON 하나를 처리하고 표준 출력에 결과를 쓴다. 항상 0 을 돌려준다.
@@ -76,18 +93,24 @@ func Run(stdin io.Reader, stdout io.Writer, home string) int {
 		return 0
 	}
 	switch in.HookEventName {
-	case "SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart":
+	case "SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart", "Stop":
 	default:
 		return 0
 	}
-	limit := limitShort
+	cfg, cfgErr := config.Load(home)
+	shadow := shadowOn(cfg)
+	long, short := limitLong, limitShort
+	if shadow {
+		long, short = limitLongShadow, limitShortShadow
+	}
+	limit := short
 	if in.HookEventName == "UserPromptSubmit" || in.HookEventName == "SubagentStart" {
-		limit = limitLong
+		limit = long
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 
-	h := &handler{home: home, in: in, now: start}
+	h := &handler{home: home, in: in, now: start, cfg: cfg, cfgErr: cfgErr, shadow: shadow}
 	type result struct {
 		out *specific
 		err error
@@ -109,15 +132,22 @@ func Run(stdin io.Reader, stdout io.Writer, home string) int {
 			return 0
 		}
 		h.row.DurationMS = time.Since(start).Milliseconds()
+		h.row.Shadow = h.shadow
 		if h.worthLogging() {
 			if err := ledger.Append(home, h.row, start); err != nil {
 				ledger.LogError(home, in.HookEventName, "원장 쓰기 실패: "+err.Error(), start)
 			}
 		}
-		if r.out != nil {
-			enc := json.NewEncoder(stdout)
-			enc.SetEscapeHTML(false)
+		if h.shadow {
+			return 0 // 그림자 방식은 판정만 남기고 아무것도 내보내지 않는다
+		}
+		enc := json.NewEncoder(stdout)
+		enc.SetEscapeHTML(false)
+		switch {
+		case r.out != nil:
 			_ = enc.Encode(map[string]any{"hookSpecificOutput": r.out})
+		case h.top != nil:
+			_ = enc.Encode(h.top)
 		}
 	case <-ctx.Done():
 		ledger.LogError(home, in.HookEventName, "시간 상한을 넘김", start)
@@ -125,10 +155,13 @@ func Run(stdin io.Reader, stdout io.Writer, home string) int {
 	return 0
 }
 
-// worthLogging 은 원장에 줄을 남길지다. 도구 호출은 걸린 것이 있을 때만 남긴다.
+// worthLogging 은 원장에 줄을 남길지다. 도구 호출은 걸린 것이 있을 때만, 턴 종료는 검사한 것이 있을 때만 남긴다.
 func (h *handler) worthLogging() bool {
 	r := h.row
-	return h.in.HookEventName != "PreToolUse" || len(r.Injected)+len(r.Dropped)+len(r.Confirm)+len(r.GrantsUsed) > 0
+	if h.in.HookEventName == "Stop" {
+		return len(r.Checks) > 0
+	}
+	return h.in.HookEventName != "PreToolUse" || len(r.Injected)+len(r.Dropped)+len(r.Confirm)+len(r.GrantsUsed)+len(r.Checks) > 0
 }
 
 func (h *handler) handle(ctx context.Context) (*specific, error) {
@@ -137,9 +170,8 @@ func (h *handler) handle(ctx context.Context) (*specific, error) {
 			h.ix.Close()
 		}
 	}()
-	var err error
-	if h.cfg, err = config.Load(h.home); err != nil {
-		return nil, err
+	if h.cfgErr != nil {
+		return nil, h.cfgErr
 	}
 	in := h.in
 	h.row = ledger.Row{Session: in.SessionID, Agent: in.AgentID, Event: in.HookEventName}
@@ -153,6 +185,9 @@ func (h *handler) handle(ctx context.Context) (*specific, error) {
 	case "PreToolUse":
 		h.row.Moment = "tool"
 		return h.preTool(ctx)
+	case "Stop":
+		h.row.Moment = "stop"
+		return nil, h.stop(ctx)
 	}
 	h.row.Moment = "subagent_start"
 	return h.subagentStart(ctx)
@@ -448,6 +483,10 @@ func (h *handler) preTool(ctx context.Context) (*specific, error) {
 			inform = append(inform, x.inj)
 		}
 	}
+	denied, reasons, err := h.toolChecks(ctx, r.Actions, r.Paths)
+	if err != nil {
+		return nil, err
+	}
 	injs, err := h.claim(ctx, inform, func(s *session.State) {
 		if deleg != nil {
 			s.Delegate(*deleg)
@@ -455,6 +494,18 @@ func (h *handler) preTool(ctx context.Context) (*specific, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	if len(reasons) > 0 {
+		// 막은 항목의 주입문은 사유에 들어 있으므로 additionalContext 에서는 뺀다.
+		// 사유로 이미 전한 것이라 "이미 넣은 항목"에는 남긴다.
+		injs = slices.DeleteFunc(slices.Clone(injs), func(i selector.Injection) bool { return slices.Contains(denied, i.ID) })
+		out := contextOut("PreToolUse", injs)
+		if out == nil {
+			out = &specific{HookEventName: "PreToolUse"}
+		}
+		out.PermissionDecision = "deny"
+		out.PermissionDecisionReason = strings.Join(reasons, "\n")
+		return out, nil
 	}
 	out := contextOut("PreToolUse", injs)
 	if len(asks) > 0 {
@@ -465,6 +516,123 @@ func (h *handler) preTool(ctx context.Context) (*specific, error) {
 		out.PermissionDecisionReason = strings.Join(asks, "\n")
 	}
 	return out, nil
+}
+
+// toolChecks 는 도구 호출 직전의 결과물 검사다. 검사 결과를 원장 줄에 적고,
+// 막아야 하는 항목의 id 와 모델에게 돌려줄 사유(항목마다 한 줄)를 돌려준다.
+// 글을 뽑다가 오류가 나도 검사만 건너뛰고 통과시킨다.
+func (h *handler) toolChecks(ctx context.Context, actions, paths []string) (denied, reasons []string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			denied, reasons, err = nil, nil, nil
+			h.row.Checks = nil
+		}
+	}()
+	if h.in.ToolName != "Bash" || len(actions) == 0 {
+		return nil, nil, nil
+	}
+	if len(paths) == 0 {
+		paths = []string{""}
+	}
+	var cands []selector.Checkable
+	seen := map[string]bool{}
+	base := h.moment("tool")
+	for _, a := range actions {
+		for _, p := range paths {
+			m := base
+			m.Action, m.Path, m.Agent = a, p, h.in.AgentType
+			if err := h.openIndex(); err != nil {
+				return nil, nil, err
+			}
+			cs, err := selector.ToolChecks(ctx, h.ix, h.cfg, m)
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, c := range cs {
+				if !seen[c.ID] {
+					seen[c.ID] = true
+					cands = append(cands, c)
+				}
+			}
+		}
+	}
+	if len(cands) == 0 {
+		return nil, nil, nil
+	}
+	targets := check.Targets(h.in.ToolName, h.toolInput())
+	for _, c := range cands {
+		result, why := check.Eval(c.Check, targets[c.Check.Target])
+		blocked := result == check.Fail && c.Check.Mode == "block"
+		h.row.Checks = append(h.row.Checks, ledger.Checked{ID: c.ID, Target: c.Check.Target, Result: result, Blocked: blocked})
+		if blocked {
+			denied = append(denied, c.ID)
+			reasons = append(reasons, check.Line(c.ID, c.Text, why))
+		}
+	}
+	return denied, reasons, nil
+}
+
+// stop 은 턴 종료의 결과물 검사다. 마지막 응답이 block 검사에 걸리면 모델이 한 번 더 돌도록 되돌린다.
+// 세션당 3회까지만, 같은 항목이 연속으로 걸리면 두 번까지만 되돌리고 그 뒤에는 원장에만 남긴다.
+// 오류는 검사만 건너뛰고 통과시킨다.
+func (h *handler) stop(ctx context.Context) error {
+	m := h.moment("stop")
+	m.Agent = h.in.AgentType
+	if err := h.openIndex(); err != nil {
+		return err
+	}
+	cands, err := selector.StopChecks(h.ix, h.cfg, m)
+	if err != nil || len(cands) == 0 {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	type failed struct {
+		c   selector.Checkable
+		why string
+	}
+	var fails []failed
+	var failIDs []string
+	for _, c := range cands {
+		var texts []string
+		if h.in.LastAssistantMessage != "" {
+			texts = []string{h.in.LastAssistantMessage}
+		}
+		result, why := check.Eval(c.Check, texts)
+		h.row.Checks = append(h.row.Checks, ledger.Checked{ID: c.ID, Target: c.Check.Target, Result: result})
+		if result == check.Fail && c.Check.Mode == "block" {
+			fails = append(fails, failed{c, why})
+			failIDs = append(failIDs, c.ID)
+		}
+	}
+	var blocked []string
+	if len(failIDs) > 0 && h.in.SessionID != "" {
+		err := session.Update(h.home, h.in.SessionID, func(s *session.State) {
+			blocked, _ = s.StopDecide(failIDs)
+		})
+		if err != nil {
+			return err
+		}
+	} else if len(failIDs) > 0 {
+		blocked = failIDs // 세션을 모르면 횟수를 셀 수 없으니 한 번만 되돌린다
+	}
+	var reasons []string
+	for _, f := range fails {
+		if slices.Contains(blocked, f.c.ID) {
+			reasons = append(reasons, check.Line(f.c.ID, f.c.Text, f.why))
+		}
+	}
+	for i := range h.row.Checks {
+		h.row.Checks[i].Blocked = slices.Contains(blocked, h.row.Checks[i].ID)
+	}
+	if len(failIDs) > len(blocked) {
+		h.row.Reason = "턴 종료 검사의 되돌림 한도로 막지 않음"
+	}
+	if len(reasons) > 0 {
+		h.top = map[string]any{"decision": "block", "reason": strings.Join(reasons, "\n")}
+	}
+	return nil
 }
 
 func (h *handler) subagentStart(ctx context.Context) (*specific, error) {
@@ -512,14 +680,28 @@ func dedupDrops(drops []selector.Drop, injected map[string]*hit) []selector.Drop
 }
 
 // Settings 는 Claude Code 설정 파일의 hooks 에 넣을 JSON 조각이다.
-func Settings() ([]byte, error) {
+// shadow 이면 그림자 방식용이다. 명령에 HEKA_SHADOW=1 을 붙이고 각 훅을 async 로 돌려 Claude Code 가 기다리지 않게 한다.
+func Settings(shadow bool) ([]byte, error) {
+	command := "heka hook"
+	if shadow {
+		command = "HEKA_SHADOW=1 heka hook"
+	}
 	entry := func(timeout int) []map[string]any {
-		return []map[string]any{{"hooks": []map[string]any{{"type": "command", "command": "heka hook", "timeout": timeout}}}}
+		h := map[string]any{"type": "command", "command": command, "timeout": timeout}
+		if shadow {
+			h["async"] = true
+		}
+		return []map[string]any{{"hooks": []map[string]any{h}}}
+	}
+	short, long := 10, 30
+	if shadow {
+		short, long = 20, 90 // 처리 시간 상한(프롬프트 60초)보다 길게
 	}
 	return json.MarshalIndent(map[string]any{"hooks": map[string]any{
-		"SessionStart":     entry(10),
-		"UserPromptSubmit": entry(30),
-		"PreToolUse":       entry(10),
-		"SubagentStart":    entry(30),
+		"SessionStart":     entry(short),
+		"UserPromptSubmit": entry(long),
+		"PreToolUse":       entry(short),
+		"SubagentStart":    entry(long),
+		"Stop":             entry(short),
 	}}, "", "  ")
 }
