@@ -285,7 +285,11 @@ func (h *handler) prompt(ctx context.Context) (*specific, error) {
 			return nil, nil
 		}
 	}
-	if err := session.Update(h.home, h.in.SessionID, (*session.State).EndTurn); err != nil {
+	err := session.Update(h.home, h.in.SessionID, func(s *session.State) {
+		s.EndTurn()
+		s.AddPrompt(h.in.Prompt)
+	})
+	if err != nil {
 		return nil, err
 	}
 	m := h.moment("prompt")

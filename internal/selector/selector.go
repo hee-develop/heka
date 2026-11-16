@@ -95,15 +95,7 @@ func Select(ctx context.Context, ix *index.Index, cfg *config.Config, m Moment) 
 // Text 는 다듬기만 한 본문이다(비필수 항목의 "(id)" 꼬리도 아직 없다).
 // 한 번의 도구 호출이 여러 동작·경로로 갈라져 선별기를 여러 번 부를 때는, 모은 후보 전체에 Fit 을 한 번만 부른다.
 func Gather(ctx context.Context, ix *index.Index, cfg *config.Config, m Moment) (Result, error) {
-	s := &sel{ctx: ctx, ix: ix, cfg: cfg, m: m, scopes: map[string]bool{}, got: map[string]bool{}}
-	for _, sc := range m.Scopes {
-		for _, a := range cfg.ScopeClosure(sc) {
-			s.scopes[a] = true
-		}
-	}
-	for _, g := range cfg.GlobalScopes {
-		s.scopes[g] = true
-	}
+	s := &sel{ctx: ctx, ix: ix, cfg: cfg, m: m, scopes: ScopeSet(cfg, m.Scopes), got: map[string]bool{}}
 	var err error
 	switch m.Kind {
 	case "tool":
@@ -391,14 +383,29 @@ func (s *sel) admitRec(r *index.Record, match func(*index.Record) string) *cand 
 	return &cand{r: r, must: must}
 }
 
-// check 는 범위, 자격, 일치를 차례로 본다. 통과하면 stage 가 빈 값이고, must 는 필수로 다룰지다.
-func (s *sel) check(r *index.Record, match func(*index.Record) string) (stage, reason string, must bool) {
-	if !slices.ContainsFunc(r.Scope, func(sc string) bool { return s.scopes[sc] }) {
+// ScopeSet 은 작업 범위들과 그 상위 범위, 전역 범위를 합친 집합이다.
+func ScopeSet(cfg *config.Config, scopes []string) map[string]bool {
+	set := map[string]bool{}
+	for _, sc := range scopes {
+		for _, a := range cfg.ScopeClosure(sc) {
+			set[a] = true
+		}
+	}
+	for _, g := range cfg.GlobalScopes {
+		set[g] = true
+	}
+	return set
+}
+
+// Qualify 는 범위와 자격을 본다. 통과하면 stage 가 빈 값이고, must 는 필수로 다룰지다.
+// 조회도 같은 규칙을 쓴다.
+func Qualify(scopes map[string]bool, r *index.Record, today string) (stage, reason string, must bool) {
+	if !slices.ContainsFunc(r.Scope, func(sc string) bool { return scopes[sc] }) {
 		return "범위", "항목의 범위 " + strings.Join(r.Scope, ", ") + " 가 순간의 범위에 없음", false
 	}
 	must = r.Must
 	switch {
-	case r.Expires != "" && r.Expires < s.m.Today:
+	case r.Expires != "" && r.Expires < today:
 		return "자격", "기한이 지남 (" + r.Expires + ")", false
 	case r.Checked != "":
 	case r.Source == "user" && r.Quote != "":
@@ -406,6 +413,14 @@ func (s *sel) check(r *index.Record, match func(*index.Record) string) (stage, r
 		must = false
 	default:
 		return "자격", "미확인 " + r.Source + " 항목은 통과하지 못함", false
+	}
+	return "", "", must
+}
+
+// check 는 범위, 자격, 일치를 차례로 본다. 통과하면 stage 가 빈 값이고, must 는 필수로 다룰지다.
+func (s *sel) check(r *index.Record, match func(*index.Record) string) (stage, reason string, must bool) {
+	if stage, reason, must = Qualify(s.scopes, r, s.m.Today); stage != "" {
+		return stage, reason, false
 	}
 	if why := match(r); why != "" {
 		return "일치", why, false
@@ -458,6 +473,9 @@ func (s *sel) noActionMatch(orEmpty bool, kinds ...string) func(*index.Record) s
 
 // tokens 는 글의 토큰 수를 (UTF-8 바이트 수 + 2) / 3 으로 어림한다.
 func tokens(s string) int { return (len(s) + 2) / 3 }
+
+// Tokens 는 글의 토큰 수 어림이다. 조회의 예산도 같은 규칙으로 잰다.
+func Tokens(s string) int { return tokens(s) }
 
 // Fit 은 예산과 형태 단계다. injs 는 Gather 가 돌려준 후보를 원래 순서대로 모은 것이다.
 // 상한(cfg.Budgets[kind])을 넘으면 필수 항목을 먼저 남기고 같은 종류 안에서는 원래 순서대로 남기며,

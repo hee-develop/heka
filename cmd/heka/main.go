@@ -16,6 +16,10 @@ const usage = `사용법: heka <명령>
   index     항목과 설정을 검증하고 색인을 만든다 (--check 는 검증만)
   select    순간 하나에 넣을 항목을 골라 JSON 으로 출력한다
   resolve   도구 호출 하나를 동작 이름으로 해석해 JSON 으로 출력한다
+  find      항목을 찾는다 (낱말 또는 작업을 설명한 문장, --json 지원)
+  add       항목을 등록한다 (비슷한 항목이 있으면 대기함)
+  pending   대기함을 보고 결정한다 (fix|replace|keep|drop)
+  mcp       MCP 서버를 표준 입출력으로 실행한다
   hook      Claude Code 훅 이벤트를 처리한다 (--print-settings 는 등록할 hooks JSON 을 출력)
   version   버전을 출력한다
   help      이 도움말을 출력한다
@@ -41,6 +45,14 @@ func runIn(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runSelect(args[1:], stdout, stderr)
 	case "resolve":
 		return runResolve(args[1:], stdout, stderr)
+	case "find":
+		return runFind(args[1:], stdout, stderr)
+	case "add":
+		return runAdd(args[1:], stdout, stderr)
+	case "pending":
+		return runPending(args[1:], stdout, stderr)
+	case "mcp":
+		return runMCP(args[1:], stdin, stdout, stderr)
 	case "hook":
 		return runHook(args[1:], stdin, stdout, stderr)
 	case "version":

@@ -80,8 +80,8 @@ var (
 	DefaultSessionGrant       = []string{`이번\s*세션`, `세션\s*동안`, `앞으로\s*계속`, `for\s+this\s+session`}
 )
 
-// DefaultBudgets 는 순간별 토큰 상한의 기본값이다.
-var DefaultBudgets = map[string]int{"session_start": 1000, "prompt": 300, "tool": 300, "subagent_start": 300}
+// DefaultBudgets 는 순간별 토큰 상한의 기본값이다. find 는 조회(heka find, MCP)의 상한이다.
+var DefaultBudgets = map[string]int{"session_start": 1000, "prompt": 300, "tool": 300, "subagent_start": 300, "find": 1500}
 
 // Load 는 home/config.yaml 을 읽는다. 파일이 없으면 빈 설정이다.
 // 범위 포함 관계에 순환이 있으면 오류다.
@@ -149,7 +149,7 @@ func (c *Config) validate() error {
 	}
 	for k, v := range c.Budgets {
 		if _, ok := DefaultBudgets[k]; !ok || v < 0 {
-			return fmt.Errorf("budgets.%s: 순간 이름(session_start|prompt|tool|subagent_start)과 0 이상의 값이어야 함", k)
+			return fmt.Errorf("budgets.%s: 순간 이름(session_start|prompt|tool|subagent_start|find)과 0 이상의 값이어야 함", k)
 		}
 	}
 	if c.NegationWindow == 0 {
