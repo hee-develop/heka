@@ -72,6 +72,7 @@ type Location struct {
 type ClaudeCode struct {
 	Scopes             item.List `yaml:"scopes"`               // 이 연결부로 들어온 순간에 늘 붙는 범위
 	ToolPromptPrefixes []string  `yaml:"tool_prompt_prefixes"` // 이걸로 시작하는 프롬프트는 도구가 만든 것
+	Transcripts        []string  `yaml:"transcripts"`          // 인용을 대조할 때 더 찾아볼 세션 기록 파일의 glob 목록(** 사용 가능)
 }
 
 // 도구가 만든 프롬프트의 머리와 세션 허용 표현의 기본값이다.
@@ -80,8 +81,9 @@ var (
 	DefaultSessionGrant       = []string{`이번\s*세션`, `세션\s*동안`, `앞으로\s*계속`, `for\s+this\s+session`}
 )
 
-// DefaultBudgets 는 순간별 토큰 상한의 기본값이다. find 는 조회(heka find, MCP)의 상한이다.
-var DefaultBudgets = map[string]int{"session_start": 1000, "prompt": 300, "tool": 300, "subagent_start": 300, "find": 1500}
+// DefaultBudgets 는 순간별 토큰 상한의 기본값이다. 0 은 제한 없음이다.
+// 훅의 순간(session_start|prompt|tool|subagent_start)은 기본이 제한 없음이고, find 는 조회(heka find, MCP)의 상한이다.
+var DefaultBudgets = map[string]int{"session_start": 0, "prompt": 0, "tool": 0, "subagent_start": 0, "find": 1500}
 
 // Load 는 home/config.yaml 을 읽는다. 파일이 없으면 빈 설정이다.
 // 범위 포함 관계에 순환이 있으면 오류다.
@@ -132,6 +134,11 @@ func (c *Config) validate() error {
 	for _, p := range c.SessionGrant {
 		if _, err := regexp.Compile(p); err != nil {
 			return fmt.Errorf("session_grant 정규식이 컴파일되지 않음: %w", err)
+		}
+	}
+	for i, g := range c.ClaudeCode.Transcripts {
+		if strings.TrimSpace(g) == "" {
+			return fmt.Errorf("claude_code.transcripts[%d] 가 비어 있음", i)
 		}
 	}
 	if c.ClaudeCode.ToolPromptPrefixes == nil {

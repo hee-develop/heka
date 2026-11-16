@@ -4,6 +4,7 @@ package register
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hee-develop/heka/internal/claudecode"
 	"github.com/hee-develop/heka/internal/config"
 	"github.com/hee-develop/heka/internal/index"
 	"github.com/hee-develop/heka/internal/item"
@@ -24,7 +26,7 @@ import (
 // similarLexical 은 새 항목의 text 를 질의로 한 낱말 점수가 이 값 이상이면 비슷한 항목으로 본다. 잠정.
 const similarLexical = 0.5
 
-// quoteWindow 는 인용을 대조할 세션 상태 파일의 수정 시각 범위다.
+// quoteWindow 는 인용을 대조할 세션 상태 파일과 기록 파일의 수정 시각 범위다.
 const quoteWindow = 24 * time.Hour
 
 // Env 는 등록이 쓰는 환경이다.
@@ -160,14 +162,33 @@ func validate(in Input) (*item.Item, error) {
 	return item.Parse(p)
 }
 
-// quoteSeen 은 최근 24시간 안에 고쳐진 세션 상태의 프롬프트에 quote 가 들어 있는가. 공백은 정규화해 견준다.
+// quoteSeen 은 최근 24시간 안에 고쳐진 세션의 기록에서 사용자가 친 글에 quote 가 들어 있는가. 공백은 정규화해 견준다.
+// 볼 기록은 세션 상태 파일에 적힌 기록 파일과, 설정의 claude_code.transcripts 에 맞는 파일이다.
+// 기록 파일이 없거나 못 읽으면 그 파일은 건너뛴다.
 func quoteSeen(e Env, quote string) bool {
 	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	q := norm(quote)
 	if q == "" {
 		return false
 	}
-	return slices.ContainsFunc(session.RecentPrompts(e.Home, e.Now.Add(-quoteWindow)), func(p string) bool { return strings.Contains(norm(p), q) })
+	since := e.Now.Add(-quoteWindow)
+	paths := session.RecentTranscripts(e.Home, since)
+	var prefixes []string
+	if e.Cfg != nil {
+		prefixes = e.Cfg.ClaudeCode.ToolPromptPrefixes
+		for _, p := range claudecode.Transcripts(e.Cfg.ClaudeCode.Transcripts, since) {
+			if !slices.Contains(paths, p) {
+				paths = append(paths, p)
+			}
+		}
+	}
+	for _, p := range paths {
+		texts, _ := claudecode.UserTexts(p, prefixes) // 못 읽은 파일은 읽은 데까지만 본다
+		if slices.ContainsFunc(texts, func(t string) bool { return strings.Contains(norm(t), q) }) {
+			return true
+		}
+	}
+	return false
 }
 
 // similar 는 새 항목과 비슷한 기존 항목을 id 순으로 돌려준다.
@@ -272,12 +293,18 @@ func write(e Env, dir string, in Input) error {
 // finish 는 색인을 다시 만들고, 원장에 한 줄 남기고, 데이터 폴더가 git 저장소면 커밋을 시도한다.
 // 모두 실패해도 호출한 일은 성공이다(자동화를 멈추지 않는다).
 func finish(e Env, event, moment, msg string, ids ...string) {
-	if err := index.Ensure(e.Home, e.Cfg); err != nil {
-		ledger.LogError(e.Home, event, "색인을 다시 만들지 못함: "+err.Error(), e.Now)
-	}
 	row := ledger.Row{Event: event, Moment: moment}
 	for _, id := range ids {
 		row.Injected = append(row.Injected, ledger.Injected{ID: id})
+	}
+	finishRow(e, row, msg)
+}
+
+// finishRow 는 finish 와 같되 원장에 남길 줄을 직접 받는다. row.Event 가 오류 기록의 이벤트 이름이다.
+func finishRow(e Env, row ledger.Row, msg string) {
+	event := row.Event
+	if err := index.Ensure(e.Home, e.Cfg); err != nil {
+		ledger.LogError(e.Home, event, "색인을 다시 만들지 못함: "+err.Error(), e.Now)
 	}
 	if err := ledger.Append(e.Home, row, e.Now); err != nil {
 		ledger.LogError(e.Home, event, "원장 쓰기 실패: "+err.Error(), e.Now)
@@ -293,4 +320,26 @@ func finish(e Env, event, moment, msg string, ids ...string) {
 			return
 		}
 	}
+}
+
+// Retire 는 항목 파일(items/<id>.md)을 지우고 색인을 다시 만들고 원장에 한 줄(이벤트 retire, 사유) 남긴다.
+// 데이터 폴더가 git 저장소이면 사유를 메시지로 커밋을 시도한다. 커밋이 실패해도 성공이다.
+func Retire(e Env, id, reason string) (string, error) {
+	reason = strings.TrimSpace(reason)
+	if !idRe.MatchString(id) {
+		return "", fmt.Errorf("id %q 가 ^[a-z0-9][a-z0-9-]*$ 에 맞지 않음", id)
+	}
+	if reason == "" {
+		return "", errors.New("은퇴시키려면 사유(reason)가 필요함")
+	}
+	p := filepath.Join(e.Home, "items", id+".md")
+	if st, err := os.Stat(p); err != nil || st.IsDir() {
+		return "", fmt.Errorf("항목 %q 가 없음", id)
+	}
+	if err := os.Remove(p); err != nil {
+		return "", err
+	}
+	row := ledger.Row{Event: "retire", Moment: "retire", Reason: reason, Injected: []ledger.Injected{{ID: id}}}
+	finishRow(e, row, reason)
+	return fmt.Sprintf("항목 %s 을 지웠습니다. 사유: %s", id, reason), nil
 }

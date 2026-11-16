@@ -709,13 +709,72 @@ func TestPromptBudgetSumsBranches(t *testing.T) {
 	}
 }
 
-// 사용자 프롬프트는 세션 상태에 남고(인용 대조용), 도구가 만든 프롬프트는 남지 않는다.
-func TestPromptsRecordedForQuoteCheck(t *testing.T) {
+// 세션 상태에는 기록 파일의 경로만 남고 프롬프트 글은 남지 않는다.
+func TestStateKeepsTranscriptPathNotPrompts(t *testing.T) {
 	e := newEnv(t)
-	e.prompt("q1", "커밋 메시지는 한국어로 써 줘")
+	tr := filepath.Join(t.TempDir(), "s.jsonl")
+	e.call(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": "q1", "cwd": e.app(), "prompt": "지어낸 비밀 프롬프트 문장", "transcript_path": tr})
 	e.prompt("q1", "<task-notification>도구가 만든 글</task-notification>")
-	got := session.RecentPrompts(e.home, time.Now().Add(-time.Hour))
-	if len(got) != 1 || got[0] != "커밋 메시지는 한국어로 써 줘" {
-		t.Errorf("남은 프롬프트 = %q", got)
+	b, err := os.ReadFile(session.Path(e.home, "q1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "비밀 프롬프트") || strings.Contains(string(b), "도구가 만든 글") {
+		t.Errorf("세션 상태에 프롬프트 글이 남음: %s", b)
+	}
+	if got := session.RecentTranscripts(e.home, time.Now().Add(-time.Hour)); !slices.Equal(got, []string{tr}) {
+		t.Errorf("남은 기록 경로 = %q", got)
+	}
+	// SessionStart 의 transcript_path 도 적는다.
+	tr2 := filepath.Join(t.TempDir(), "t.jsonl")
+	e.call(map[string]any{"hook_event_name": "SessionStart", "session_id": "q2", "cwd": e.app(), "source": "startup", "transcript_path": tr2})
+	if got := session.Load(e.home, "q2").Transcript; got != tr2 {
+		t.Errorf("SessionStart 의 기록 경로 = %q", got)
+	}
+}
+
+// 설정에 예산이 없으면 항목이 많아도 예산으로 빠지지 않고, 값을 적으면 빠진다. 넣은 글의 토큰 어림은 원장에 남는다.
+func TestNoBudgetByDefault(t *testing.T) {
+	items := map[string]string{}
+	for _, n := range []string{"a", "b", "c", "d", "e", "f"} {
+		items["must-"+n] = "text: 길게 쓴 필수 규칙 " + n + " 입니다 가나다라마바사아자차카타파하.\nmust: true\nwhen: {action: git.commit}"
+	}
+	e := newEnv(t)
+	e.onlyItems(items, "")
+	h := e.bash("s", "git commit -m x")
+	if got := strings.Count(h.Specific.Context, "\n- "); got != 6 {
+		t.Errorf("예산이 없으면 6건 모두 들어가야 함: %d건\n%s", got, h.Specific.Context)
+	}
+	if got := e.droppedByBudget(); len(got) != 0 {
+		t.Errorf("예산 탈락이 있음: %v", got)
+	}
+	rows := e.ledgerRows()
+	last := rows[len(rows)-1]
+	tok, _ := last["tokens"].(float64)
+	if want := (len(h.Specific.Context) + 2) / 3; int(tok) != want {
+		t.Errorf("원장 tokens = %v, 기대 %d", last["tokens"], want)
+	}
+	if tok < 100 {
+		t.Errorf("토큰 어림이 너무 작음: %v", tok)
+	}
+
+	// 값을 적으면 적용된다.
+	e2 := newEnv(t)
+	e2.onlyItems(items, "budgets: {tool: 60}\n")
+	h = e2.bash("s", "git commit -m x")
+	if got := injectedTokens(h); got > 60 || len(e2.droppedByBudget()) == 0 {
+		t.Errorf("상한 60 이 적용돼야 함: %d토큰, 탈락 %v", got, e2.droppedByBudget())
+	}
+
+	// 다른 순간(세션 시작, 프롬프트, 서브에이전트)도 기본은 제한이 없다.
+	e3 := newEnv(t)
+	many := map[string]string{}
+	for _, n := range []string{"a", "b", "c", "d", "e", "f"} {
+		many["start-"+n] = "text: 세션 시작 필수 규칙 " + n + " 가나다라마바사아자차카타파하 가나다라마바사.\nmust: true\nwhen: {moment: session_start}"
+	}
+	e3.onlyItems(many, "")
+	h = e3.start("s", "startup")
+	if got := strings.Count(h.Specific.Context, "\n- "); got != 6 || len(e3.droppedByBudget()) != 0 {
+		t.Errorf("세션 시작: %d건, 탈락 %v", got, e3.droppedByBudget())
 	}
 }

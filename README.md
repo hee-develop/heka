@@ -11,6 +11,7 @@ heka는 AI 에이전트가 일하는 각 순간에, 그 순간에 필요한 컨�
 - `heka resolve`: 도구 호출 하나를 동작 이름으로 바꿔 보여 줍니다.
 - `heka find`: 항목을 찾습니다(낱말 나열도, 작업을 설명한 문장도 됩니다).
 - `heka add`, `heka pending`: 항목을 등록하고, 비슷한 항목이 있어 대기함에 든 것을 결정합니다.
+- `heka why`, `heka list`, `heka stats`, `heka retire`: 원장과 항목을 들여다보고 항목을 은퇴시킵니다(아래 "원장과 항목 보기").
 - `heka mcp`: 조회·등록·표시를 위한 MCP 서버입니다(표준 입출력).
 - `heka hook`: Claude Code 훅 연결부입니다. 표준 입력의 훅 JSON 을 처리해 표준 출력에 JSON 을 냅니다. `--print-settings` 는 설정 파일의 `hooks` 에 넣을 JSON 조각을 출력하며, 설정 파일을 직접 고치지는 않습니다.
 - `heka version`
@@ -23,7 +24,8 @@ heka는 AI 에이전트가 일하는 각 순간에, 그 순간에 필요한 컨�
 
 - 프롬프트가 시킨 동작("푸시해 줘")은 그 턴 동안의 허용으로 적힙니다. "이번 세션 동안" 같은 표현이 있으면 세션 동안 남고, "푸시하지 마" 는 허용을 거둡니다. 도구가 만든 프롬프트(`tool_prompt_prefixes` 로 시작하는 글)는 항목도 허용도 건드리지 않습니다.
 - `confirm: true` 항목은 그 동작(또는 상위 동작)에 허용이 없으면 `PreToolUse` 에서 확인을 요구하고(`permissionDecision: "ask"`), `always` 는 허용이 있어도 요구합니다.
-- 오류, 입력 해석 실패, 시간 초과(프롬프트·`SubagentStart` 25초, 나머지 5초)에서는 아무것도 출력하지 않고 종료 코드 0 으로 끝나며, 오류는 `$HEKA_HOME/ledger/errors.log` 에 한 줄 남습니다. 판단은 `$HEKA_HOME/ledger/YYYY-MM.jsonl` 에 한 줄씩 남습니다. 세션 상태는 `$HEKA_HOME/sessions/<session_id>.json` 이며, 등록할 때 인용을 대조하려고 사용자 프롬프트(세션마다 최근 50개)도 거기에 남습니다.
+- 오류, 입력 해석 실패, 시간 초과(프롬프트·`SubagentStart` 25초, 나머지 5초)에서는 아무것도 출력하지 않고 종료 코드 0 으로 끝나며, 오류는 `$HEKA_HOME/ledger/errors.log` 에 한 줄 남습니다. 판단은 `$HEKA_HOME/ledger/YYYY-MM.jsonl` 에 한 줄씩 남습니다. 세션 상태는 `$HEKA_HOME/sessions/<session_id>.json` 이며, 등록할 때 인용을 대조하려고 훅 입력의 `transcript_path`(세션 기록 파일의 경로)만 거기에 남습니다. 프롬프트 글은 따로 복사해 두지 않습니다.
+- 토큰 상한은 기본이 없습니다(설정의 `budgets` 에 순간별로 적으면 적용). 넣은 글의 토큰 어림은 원장 줄의 `tokens` 에 남으므로 "너무 많은지"는 그것으로 봅니다. 참고 항목은 한 번에 최대 3건입니다.
 
 훅 등록은 직접 합니다. `heka hook --print-settings` 가 낸 JSON 을 Claude Code 설정 파일의 `hooks` 에 넣으세요.
 
@@ -71,7 +73,7 @@ heka add --file <항목 파일> [--checked]
 플래그는 `--id --text --must --moment --action --path --repo --agent --about --scope --source --quote --expires --confirm --body` 이고 목록 필드는 여러 번 쓸 수 있습니다. `--checked` 는 사람이 직접 확인했다는 뜻으로 오늘 날짜를 `checked` 에 넣습니다(MCP 로는 받지 않습니다). `--file` 로 읽은 파일의 `checked` 는 무시합니다.
 
 - 검증은 `heka index --check` 와 같은 규칙입니다. error 가 있으면 등록하지 않고 문제 목록을 냅니다.
-- `source: user` 이고 `quote` 가 있으면, 훅이 세션 상태에 남긴 사용자 프롬프트(세션마다 최근 50개, 한 개 4,000자까지) 중 최근 24시간 안에 고쳐진 세션의 것과 공백을 정규화해 대조합니다. 확인되지 않으면 `quote` 를 비우고 본문 끝에 `확인되지 않은 인용: "..."` 을 적어 등록하며, 사람이 확인(`checked`)하기 전에는 주입되지 않습니다.
+- `source: user` 이고 `quote` 가 있으면, 최근 24시간 안에 고쳐진 세션 상태 파일에 적힌 세션 기록 파일을 읽어 **사용자가 친 글**과 공백을 정규화해 대조합니다. AI 의 글, 도구 결과(`tool_result`), 도구가 만든 프롬프트(`tool_prompt_prefixes`), `<local-command`·`<command-name>`·`<system-reminder>` 로 시작하는 글, `isMeta`·`isSidechain` 줄은 인용으로 인정하지 않습니다. 기록 파일 읽기는 `internal/claudecode` 가 맡고(Claude Code 형식), 설정의 `claude_code.transcripts` 에 glob 목록을 주면 같은 형식의 다른 기록(최근 24시간 안에 고쳐진 것)도 봅니다. 기록 파일이 없거나 못 읽으면 그 파일은 건너뜁니다. 확인되지 않으면 `quote` 를 비우고 본문 끝에 `확인되지 않은 인용: "..."` 을 적어 등록하며, 사람이 확인(`checked`)하기 전에는 주입되지 않습니다.
 - 비슷한 항목이 있으면 `items/_pending/<id>.md` 에 두고 후보를 알립니다. 비슷함은 (a) 범위와 `when.action` 이 겹침, (b) 주제어가 같음, (c) 새 항목의 `text` 를 질의로 한 낱말 점수가 0.5 이상(잠정), (d) 같은 id 입니다. 대기함의 항목은 주입되지 않습니다. 없으면 `items/<id>.md` 로 쓰고 색인을 다시 만듭니다.
 - 파일은 임시 파일에 쓴 뒤 이름을 바꿉니다. `$HEKA_HOME` 에 `.git` 이 있으면 쓴 뒤 `git add`·`git commit`(`add: <id>`)을 시도하고, 실패해도 등록은 성공입니다.
 
@@ -84,6 +86,22 @@ heka pending drop <대기 id>                   # 대기함에서 지움
 ```
 
 결정마다 색인을 다시 만들고 원장에 한 줄 남깁니다.
+
+## 원장과 항목 보기: heka why, list, stats, retire
+
+원장(`$HEKA_HOME/ledger/YYYY-MM.jsonl`)은 여러 달 파일을 모두 읽고, 깨진 줄은 건너뜁니다.
+
+```sh
+heka why [--session <id>] [--last N] [--id <항목 id>] [--json]
+heka list [--json] [--agent <종류>] [--must] [--flagged]
+heka stats <id> [--json]
+heka retire <id> --reason <글>
+```
+
+- `why`: 최근 줄(기본 20)을 한 줄씩 보입니다. 시각(UTC), 이벤트, 동작, 넣은 항목과 이유, 빠진 항목(`id[단계: 사유]`), 토큰. `--id` 를 주면 그 항목이 넣어졌거나 빠진 줄만 봅니다. `--json` 은 원장 줄을 JSON 배열로 냅니다.
+- `list`: 항목의 id, 필수 여부, 조건(`when`), 범위, 확인 날짜, 기한. `--agent` 는 `when.agent` 에 그 종류가 걸린 항목, `--flagged` 는 원장에 `flag` 가 남은 항목만 보입니다. 검증에 실패한 항목은 빼고 알립니다.
+- `stats`: 주입 횟수, 마지막 주입 시각, 예산·중복·판정으로 빠진 횟수, `flag` 횟수와 마지막 사유. 훅의 줄만 셉니다(조회·등록 줄은 세지 않습니다).
+- `retire`: 항목 파일을 지우고 색인을 다시 만들고 원장에 `retire` 한 줄(사유 포함)을 남깁니다. `$HEKA_HOME` 에 `.git` 이 있으면 사유를 메시지로 커밋을 시도하며, 실패해도 성공입니다.
 
 ## MCP 서버: heka mcp
 

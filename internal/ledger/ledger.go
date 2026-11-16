@@ -3,9 +3,12 @@
 package ledger
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -46,7 +49,18 @@ type Row struct {
 	GrantsUsed []string   `json:"grants_used"` // 확인 없이 진행하게 한 허용(동작)
 	Confirm    []string   `json:"confirm"`     // 확인을 요구한 항목 id
 	DurationMS int64      `json:"duration_ms"`
+	Tokens     int        `json:"tokens,omitempty"` // 넣은 글의 토큰 어림
+	Reason     string     `json:"reason,omitempty"` // retire 의 사유
 	Prompt     string     `json:"prompt,omitempty"`
+}
+
+// IsHook 은 훅 이벤트(항목을 실제로 넣거나 뺀 판단)의 줄인가. find·add·flag·retire 등의 줄은 아니다.
+func (r Row) IsHook() bool {
+	switch r.Event {
+	case "SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart":
+		return true
+	}
+	return false
 }
 
 // Append 는 줄을 이번 달 파일에 한 번의 쓰기로 덧붙인다. 비어 있는 목록은 빈 배열로 쓴다.
@@ -97,4 +111,38 @@ func appendFile(path string, b []byte) error {
 	defer f.Close()
 	_, err = f.Write(b)
 	return err
+}
+
+// ReadAll 은 원장 폴더의 모든 월 파일(YYYY-MM.jsonl)을 달 순서로, 파일 안에서는 쓴 순서로 읽는다.
+// 깨진 줄과 읽을 수 없는 파일은 건너뛴다. 원장이 없으면 빈 목록이다.
+func ReadAll(home string) []Row {
+	files, _ := filepath.Glob(filepath.Join(home, "ledger", "*.jsonl"))
+	sort.Strings(files)
+	var rows []Row
+	for _, f := range files {
+		rows = append(rows, readFile(f)...)
+	}
+	return rows
+}
+
+func readFile(path string) []Row {
+	fh, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer fh.Close()
+	r := bufio.NewReaderSize(fh, 1<<16)
+	var rows []Row
+	for {
+		line, err := r.ReadBytes('\n')
+		if line = bytes.TrimSpace(line); len(line) > 0 {
+			var row Row
+			if json.Unmarshal(line, &row) == nil && row.Event != "" {
+				rows = append(rows, row)
+			}
+		}
+		if err != nil { // EOF 이거나 읽기 오류. 어느 쪽이든 읽은 데까지만 쓴다
+			return rows
+		}
+	}
 }

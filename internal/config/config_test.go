@@ -114,7 +114,7 @@ func TestExtended(t *testing.T) {
 	if j.Timeout != 3*time.Second || j.Votes != 2 || j.Candidates != 3 || j.Instruction != "지시문\n" || !reflect.DeepEqual(j.Command, []string{"my-model-cli", "--model", "small"}) {
 		t.Errorf("judge = %+v", j)
 	}
-	if c.Budgets["prompt"] != 120 || c.Budgets["tool"] != 300 || c.Budgets["session_start"] != 1000 {
+	if c.Budgets["prompt"] != 120 || c.Budgets["tool"] != 0 || c.Budgets["session_start"] != 0 || c.Budgets["subagent_start"] != 0 || c.Budgets["find"] != 1500 {
 		t.Errorf("budgets = %v", c.Budgets)
 	}
 }

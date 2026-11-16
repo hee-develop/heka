@@ -478,7 +478,7 @@ func tokens(s string) int { return (len(s) + 2) / 3 }
 func Tokens(s string) int { return tokens(s) }
 
 // Fit 은 예산과 형태 단계다. injs 는 Gather 가 돌려준 후보를 원래 순서대로 모은 것이다.
-// 상한(cfg.Budgets[kind])을 넘으면 필수 항목을 먼저 남기고 같은 종류 안에서는 원래 순서대로 남기며,
+// 상한(cfg.Budgets[kind])이 0 이하이면 제한이 없어 모두 남긴다. 상한을 넘으면 필수 항목을 먼저 남기고 같은 종류 안에서는 원래 순서대로 남기며,
 // 안 들어가는 항목은 건너뛰고 다음 항목을 시도한다. 남긴 항목은 비필수에 "(id)" 꼬리를 붙인 본문을 갖고,
 // 빠진 항목은 예산 단계의 탈락으로 drops 뒤에 덧붙여 돌려준다.
 func Fit(cfg *config.Config, kind string, injs []Injection, drops []Drop) ([]Injection, []Drop) {
@@ -497,7 +497,7 @@ func Fit(cfg *config.Config, kind string, injs []Injection, drops []Drop) ([]Inj
 			if c.Must != must {
 				continue
 			}
-			if t := tokens(texts[i]); used+t <= budget {
+			if t := tokens(texts[i]); budget <= 0 || used+t <= budget {
 				keep[i], used = true, used+t
 			} else {
 				drops = append(drops, Drop{c.ID, "예산", fmt.Sprintf("%s 순간의 상한 %d토큰을 넘음", kind, budget)})

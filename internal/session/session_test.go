@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -110,29 +111,42 @@ func TestUpdateConcurrent(t *testing.T) {
 	}
 }
 
-func TestPromptsAreBounded(t *testing.T) {
+func TestRecentTranscripts(t *testing.T) {
 	home := t.TempDir()
-	err := Update(home, "p", func(s *State) {
-		s.AddPrompt(strings.Repeat("가", 5000))
-		for i := 0; i < 60; i++ {
-			s.AddPrompt("프롬프트")
+	for id, tr := range map[string]string{"a": "/x/a.jsonl", "b": "/x/b.jsonl", "c": "/x/a.jsonl", "none": ""} {
+		if err := Update(home, id, func(s *State) { s.Transcript = tr }); err != nil {
+			t.Fatal(err)
 		}
-	})
-	if err != nil {
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(Path(home, "b"), old, old); err != nil {
 		t.Fatal(err)
 	}
-	got := Load(home, "p").Prompts
-	if len(got) != 50 || got[0] != "프롬프트" {
-		t.Errorf("최근 50개만 남아야 함: %d개", len(got))
+	got := RecentTranscripts(home, time.Now().Add(-time.Hour))
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"/x/a.jsonl"}) {
+		t.Errorf("최근 파일의 기록 경로만, 중복 없이: %v", got)
 	}
-	Update(home, "q", func(s *State) { s.AddPrompt(strings.Repeat("가", 5000)) })
-	if r := []rune(Load(home, "q").Prompts[0]); len(r) != 4000 {
-		t.Errorf("한 개 4,000자까지: %d", len(r))
-	}
-	if len(RecentPrompts(home, time.Now().Add(time.Hour))) != 0 {
+	if len(RecentTranscripts(home, time.Now().Add(time.Hour))) != 0 {
 		t.Error("기준 시각 이후에 고쳐진 파일만 읽어야 함")
 	}
-	if len(RecentPrompts(home, time.Now().Add(-time.Hour))) != 51 {
-		t.Error("최근 파일의 프롬프트를 모두 모아야 함")
+	if got := RecentTranscripts(home, time.Now().Add(-100*time.Hour)); len(got) != 2 {
+		t.Errorf("기준을 넓히면 오래된 것도: %v", got)
+	}
+}
+
+// 이전 판이 남긴 prompts 필드가 있어도 읽히고, 다시 쓰면 사라진다.
+func TestOldPromptsFieldIsDropped(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(Path(home, "o")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(Path(home, "o"), []byte(`{"shown":{"":["a"]},"prompts":["옛 프롬프트"]}`), 0o644)
+	if err := Update(home, "o", func(s *State) { s.Show("", "b") }); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(Path(home, "o"))
+	if strings.Contains(string(b), "옛 프롬프트") || strings.Contains(string(b), "prompts") {
+		t.Errorf("프롬프트가 남음: %s", b)
 	}
 }

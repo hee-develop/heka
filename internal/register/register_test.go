@@ -2,6 +2,7 @@ package register
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/hee-develop/heka/internal/config"
 	"github.com/hee-develop/heka/internal/index"
 	"github.com/hee-develop/heka/internal/item"
+	"github.com/hee-develop/heka/internal/ledger"
 	"github.com/hee-develop/heka/internal/selector"
 	"github.com/hee-develop/heka/internal/session"
 )
@@ -85,9 +87,7 @@ func TestAddInvalid(t *testing.T) {
 
 func TestAddWithoutSimilarIsLiveImmediately(t *testing.T) {
 	e := newEnv(t)
-	if err := session.Update(e.Home, "s1", func(s *session.State) { s.AddPrompt("앞으로   커밋은\n한국어로 써 줘. 첫 줄은 짧게.") }); err != nil {
-		t.Fatal(err)
-	}
+	linkTranscript(t, e, "s1", filepath.Join(t.TempDir(), "s1.jsonl"), userLine("앞으로   커밋은\n한국어로 써 줘. 첫 줄은 짧게."))
 	in := Input{ID: "commit-lang", Text: "커밋 메시지는 한국어로 쓴다.", Must: true, When: item.When{Action: item.List{"git.commit"}},
 		About: []string{"커밋 메시지"}, Scope: []string{"personal"}, Source: "user", Quote: "커밋은 한국어로 써 줘.", Body: "배경."}
 	r := mustAdd(t, e, in, "added")
@@ -127,10 +127,44 @@ func TestUnverifiedQuoteIsNotInjected(t *testing.T) {
 	}
 }
 
+// 세션 기록 파일 한 줄을 만든다. 형식만 흉내 낸 지어낸 글이다.
+func userLine(text string) map[string]any {
+	return map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": text}}
+}
+
+func writeTranscript(t *testing.T, path string, lines ...map[string]any) {
+	t.Helper()
+	var b strings.Builder
+	for _, l := range lines {
+		j, err := json.Marshal(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(j)
+		b.WriteByte('\n')
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// linkTranscript 는 기록 파일을 쓰고 세션 상태에 그 경로를 적는다.
+func linkTranscript(t *testing.T, e Env, sid, path string, lines ...map[string]any) {
+	t.Helper()
+	writeTranscript(t, path, lines...)
+	if err := session.Update(e.Home, sid, func(s *session.State) { s.Transcript = path }); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestQuoteWindow(t *testing.T) {
 	e := newEnv(t)
-	if err := session.Update(e.Home, "old", func(s *session.State) { s.AddPrompt("옛날에 한 말") }); err != nil {
-		t.Fatal(err)
+	linkTranscript(t, e, "old", filepath.Join(t.TempDir(), "old.jsonl"), userLine("옛날에 한 말"))
+	if !quoteSeen(e, "옛날에 한 말") {
+		t.Fatal("최근 세션이면 확인돼야 함")
 	}
 	old := now.Add(-25 * time.Hour)
 	if err := os.Chtimes(session.Path(e.Home, "old"), old, old); err != nil {
@@ -138,6 +172,157 @@ func TestQuoteWindow(t *testing.T) {
 	}
 	if quoteSeen(e, "옛날에 한 말") {
 		t.Error("24시간 지난 세션 상태는 대조하지 않음")
+	}
+}
+
+// 사용자가 친 글에 있는 말만 인용으로 인정한다.
+func TestQuoteOnlyFromWhatUserTyped(t *testing.T) {
+	e := newEnv(t)
+	tr := filepath.Join(t.TempDir(), "s.jsonl")
+	linkTranscript(t, e, "s", tr,
+		userLine("커밋 메시지는   한국어로\n써 줘"),
+		map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "AI 만 한 말입니다"}}}},
+		map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "도구 결과에만 있는 말"}}}},
+		userLine("<task-notification>도구가 만든 프롬프트에만 있는 말</task-notification>"),
+		userLine("<system-reminder>시스템 안내에만 있는 말</system-reminder>"),
+		map[string]any{"type": "user", "isMeta": true, "message": map[string]any{"role": "user", "content": "메타 줄에만 있는 말"}},
+		map[string]any{"type": "user", "isSidechain": true, "message": map[string]any{"role": "user", "content": "곁가지 줄에만 있는 말"}},
+		map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "배열로 온 사용자 글"}}}},
+	)
+	for _, q := range []string{"커밋 메시지는 한국어로 써 줘", "배열로 온 사용자 글"} {
+		if !quoteSeen(e, q) {
+			t.Errorf("사용자가 친 글인데 확인되지 않음: %q", q)
+		}
+	}
+	for _, q := range []string{"AI 만 한 말입니다", "도구 결과에만 있는 말", "도구가 만든 프롬프트에만 있는 말", "시스템 안내에만 있는 말", "메타 줄에만 있는 말", "곁가지 줄에만 있는 말", ""} {
+		if quoteSeen(e, q) {
+			t.Errorf("사용자가 친 글이 아닌데 확인됨: %q", q)
+		}
+	}
+}
+
+func TestQuoteTranscriptMissingOrBroken(t *testing.T) {
+	e := newEnv(t)
+	if err := session.Update(e.Home, "gone", func(s *session.State) { s.Transcript = filepath.Join(t.TempDir(), "없는.jsonl") }); err != nil {
+		t.Fatal(err)
+	}
+	if quoteSeen(e, "아무 말") {
+		t.Error("기록 파일이 없으면 확인되지 않음")
+	}
+	// 깨진 줄은 건너뛰고 나머지를 본다.
+	tr := filepath.Join(t.TempDir(), "b.jsonl")
+	writeTranscript(t, tr, userLine("멀쩡한 줄의 말"))
+	f, _ := os.OpenFile(tr, os.O_APPEND|os.O_WRONLY, 0o644)
+	f.WriteString("{깨진 줄 \"user\"\n")
+	f.Close()
+	if err := session.Update(e.Home, "broken", func(s *session.State) { s.Transcript = tr }); err != nil {
+		t.Fatal(err)
+	}
+	if !quoteSeen(e, "멀쩡한 줄의 말") {
+		t.Error("깨진 줄이 있어도 나머지는 읽어야 함")
+	}
+	// 기록 파일이 없을 때 등록은 인용을 비우고 본문에 적는다.
+	in := Input{ID: "q-missing", Text: "커밋 메시지는 한국어로 쓴다.", About: []string{"커밋"}, Scope: []string{"personal"}, Source: "user", Quote: "한 적 없는 말"}
+	r := mustAdd(t, e, in, "added")
+	if !r.QuoteUnverified {
+		t.Error("대조가 안 되면 QuoteUnverified")
+	}
+	b, _ := os.ReadFile(filepath.Join(e.Home, "items", "q-missing.md"))
+	if !strings.HasSuffix(string(b), "확인되지 않은 인용: \"한 적 없는 말\"\n") {
+		t.Errorf("본문 끝에 적어야 함:\n%s", b)
+	}
+}
+
+// 설정의 claude_code.transcripts 글롭에 맞는 파일(최근 24시간 안에 고쳐진 것)도 본다.
+func TestQuoteExtraTranscriptGlobs(t *testing.T) {
+	archive := t.TempDir()
+	e := newEnv(t)
+	cfgText := "global_scopes: [personal]\nclaude_code:\n  transcripts: ['" + archive + "/sessions/**/*.jsonl']\n"
+	if err := os.WriteFile(filepath.Join(e.Home, "config.yaml"), []byte(cfgText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(e.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Cfg = cfg
+	deep := filepath.Join(archive, "sessions", "2026", "11", "a.jsonl")
+	writeTranscript(t, deep, userLine("보관함에 있는 사용자 말"))
+	shallow := filepath.Join(archive, "sessions", "b.jsonl")
+	writeTranscript(t, shallow, userLine("얕은 곳의 사용자 말"))
+	stale := filepath.Join(archive, "sessions", "2025", "c.jsonl")
+	writeTranscript(t, stale, userLine("오래된 파일의 말"))
+	old := now.Add(-30 * time.Hour)
+	os.Chtimes(stale, old, old)
+	other := filepath.Join(archive, "elsewhere", "d.jsonl")
+	writeTranscript(t, other, userLine("글롭 밖의 말"))
+	for _, tt := range []struct {
+		quote string
+		want  bool
+	}{{"보관함에 있는 사용자 말", true}, {"얕은 곳의 사용자 말", true}, {"오래된 파일의 말", false}, {"글롭 밖의 말", false}} {
+		if got := quoteSeen(e, tt.quote); got != tt.want {
+			t.Errorf("%q: %v, 기대 %v", tt.quote, got, tt.want)
+		}
+	}
+}
+
+func TestRetire(t *testing.T) {
+	e := newEnv(t)
+	mustAdd(t, e, base("old-rule"), "added")
+	if _, err := Retire(e, "nope", "이유"); err == nil {
+		t.Error("없는 항목은 오류")
+	}
+	if _, err := Retire(e, "../x", "이유"); err == nil {
+		t.Error("id 모양이 틀리면 오류")
+	}
+	if _, err := Retire(e, "old-rule", "  "); err == nil {
+		t.Error("사유가 없으면 오류")
+	}
+	if !exists(e, "items/old-rule.md") {
+		t.Fatal("실패한 호출이 파일을 지움")
+	}
+	if _, err := Retire(e, "old-rule", "더 쓰지 않는다"); err != nil {
+		t.Fatal(err)
+	}
+	if exists(e, "items/old-rule.md") {
+		t.Error("파일이 남음")
+	}
+	rows := ledger.ReadAll(e.Home)
+	last := rows[len(rows)-1]
+	if last.Event != "retire" || last.Reason != "더 쓰지 않는다" || len(last.Injected) != 1 || last.Injected[0].ID != "old-rule" {
+		t.Errorf("원장 줄 = %+v", last)
+	}
+	if got := selectTool(t, e, "x.y"); len(got) != 0 {
+		t.Errorf("색인에 남음: %v", got)
+	}
+}
+
+// 데이터 폴더가 git 저장소이면 사유를 메시지로 커밋을 시도한다.
+func TestRetireCommitsInGitHome(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git 없음")
+	}
+	for k, v := range map[string]string{"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"} {
+		t.Setenv(k, v)
+	}
+	e := newEnv(t)
+	git := func(args ...string) string {
+		out, err := exec.Command("git", append([]string{"-C", e.Home}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q")
+	mustAdd(t, e, base("old-rule"), "added")
+	if _, err := Retire(e, "old-rule", "낡아서 뺀다"); err != nil {
+		t.Fatal(err)
+	}
+	if msg := git("log", "-1", "--format=%s"); msg != "낡아서 뺀다" {
+		t.Errorf("커밋 메시지 = %q", msg)
+	}
+	if st := git("status", "--porcelain", "--", "items"); st != "" {
+		t.Errorf("items 에 남은 변경: %s", st)
 	}
 }
 
