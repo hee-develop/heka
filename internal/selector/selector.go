@@ -62,6 +62,29 @@ type Result struct {
 	Asked      []string    `json:"asked"`
 	Refused    []string    `json:"refused"`
 	Judges     []Judged    `json:"judges,omitempty"` // 판정 명령을 부른 기록(호출마다 한 건)
+	Pick       *Pick       `json:"pick,omitempty"`   // 모델이 목록에서 고른 기록(judge.pick.mode: record). 주입에는 쓰지 않는다.
+}
+
+// Pick 은 모델이 목록에서 후보를 고른 기록이다(judge.pick.mode: record). 주입에는 쓰지 않는다.
+type Pick struct {
+	Listed     int      `json:"listed"`          // 모델에게 준 항목 수
+	ListTokens int      `json:"list_tokens"`     // 목록 글의 토큰 어림(tokens())
+	MS         int64    `json:"ms"`              // 고르는 호출에 걸린 시간(밀리초)
+	Error      bool     `json:"error,omitempty"` // 시간 초과를 포함해 답을 얻지 못함
+	Timeout    bool     `json:"timeout,omitempty"`
+	Unknown    int      `json:"unknown,omitempty"` // 목록에 없는 id 를 답한 수
+	Items      []Picked `json:"items"`
+}
+
+// Picked 는 모델이 고른 항목 하나다.
+type Picked struct {
+	ID     string `json:"id"`
+	Direct bool   `json:"direct"`           // 모델이 바로 넣으라고 고름. false 면 따져 볼 만하다고 고름
+	Judged bool   `json:"judged"`           // 한 건씩 판정을 받았는가
+	Inject bool   `json:"inject"`           // 한 건씩 판정의 답
+	Reused bool   `json:"reused,omitempty"` // 지금 방식의 후보여서 그 판정을 그대로 씀
+	MS     int64  `json:"ms,omitempty"`     // 판정에 걸린 시간(다시 쓴 것은 0)
+	Error  bool   `json:"error,omitempty"`
 }
 
 // Judged 는 판정 명령을 한 번 부른 기록이다. MS 는 걸린 시간(밀리초)이다.
@@ -91,6 +114,7 @@ type sel struct {
 	asked  []string
 	refuse []string
 	judges []Judged
+	pick   *Pick // 기록 갈래의 결과. 주입에는 쓰지 않는다.
 }
 
 // Select 는 순간 하나에 넣을 항목을 고른다. 예산까지 적용한 결과다.
@@ -126,7 +150,7 @@ func Gather(ctx context.Context, ix *index.Index, cfg *config.Config, m Moment) 
 	if err != nil {
 		return Result{}, err
 	}
-	res := Result{Injections: []Injection{}, Drops: s.drops, Asked: s.asked, Refused: s.refuse, Judges: s.judges}
+	res := Result{Injections: []Injection{}, Drops: s.drops, Asked: s.asked, Refused: s.refuse, Judges: s.judges, Pick: s.pick}
 	for _, c := range s.cands {
 		res.Injections = append(res.Injections, Injection{c.r.ID, strings.TrimSpace(c.r.Text), c.must, c.why, c.r.Confirm, c.r.Hash, c.r.CheckJSON})
 	}
@@ -256,6 +280,23 @@ func (s *sel) topic() error {
 	if text == "" {
 		return nil
 	}
+	// 기록 갈래는 지금 방식과 동시에 시작하고, 지금 방식이 끝난 뒤 결과를 받는다.
+	var pick <-chan *pickRun
+	if s.cfg.Judge.PickRecording() {
+		pick = s.startPick()
+	}
+	judged, err := s.topicScript(text)
+	if err != nil {
+		return err
+	}
+	if pick != nil {
+		s.pick = s.finishPick(<-pick, judged)
+	}
+	return nil
+}
+
+// topicScript 는 주제 갈래의 지금 방식(스크립트 후보 + 한 건씩 판정)이다. 판정한 항목의 답을 id 별로 돌려준다.
+func (s *sel) topicScript(text string) (map[string]judge.Outcome, error) {
 	// 대상은 동작 조건이 없고, moment 조건이 있으면 prompt(또는 이 순간)를 포함하는 항목이다.
 	// 대상이 아닌 항목은 후보가 아니므로 탈락으로도 남기지 않는다.
 	target := func(r *index.Record) bool {
@@ -265,12 +306,12 @@ func (s *sel) topic() error {
 	var cands []*cand
 	about, err := s.ix.AboutMatches(text)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, am := range about {
 		r, err := s.ix.Item(am.ID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !target(r) {
 			continue
@@ -283,7 +324,7 @@ func (s *sel) topic() error {
 	// 순위는 색인 전체에서 매기고, 대상이 아닌 항목은 조용히 건너뛰며 위에서부터 채운다.
 	ranked, err := s.ix.Lexical(text, math.MaxInt32)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	picked := 0
 	for i, sc := range ranked {
@@ -292,7 +333,7 @@ func (s *sel) topic() error {
 		}
 		r, err := s.ix.Item(sc.ID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !target(r) {
 			continue
@@ -307,13 +348,13 @@ func (s *sel) topic() error {
 		}
 	}
 	if len(cands) == 0 {
-		return nil
+		return nil, nil
 	}
 	if len(s.cfg.Judge.Command) == 0 {
 		for _, c := range cands {
 			s.drop(c.r.ID, "판정", "판정 명령 없음")
 		}
-		return nil
+		return nil, nil
 	}
 	ans := make([]judge.Outcome, len(cands))
 	var wg sync.WaitGroup
@@ -327,7 +368,9 @@ func (s *sel) topic() error {
 	}
 	wg.Wait()
 	kept := 0
+	judged := make(map[string]judge.Outcome, len(cands))
 	for i, c := range cands {
+		judged[c.r.ID] = ans[i]
 		for _, k := range ans[i].Calls {
 			s.judges = append(s.judges, Judged{ID: c.r.ID, Inject: k.Inject, MS: k.MS, Error: k.Error, Timeout: k.Timeout})
 		}
@@ -344,7 +387,106 @@ func (s *sel) topic() error {
 			s.cands = append(s.cands, c)
 		}
 	}
-	return nil
+	return judged, nil
+}
+
+// pickRun 은 고르는 호출의 결과다. 목록에 올릴 항목이 없었으면 nil 이다.
+type pickRun struct {
+	items      []judge.Item
+	recs       map[string]*index.Record
+	listTokens int
+	out        judge.PickOutcome
+}
+
+// startPick 은 목록 만들기와 고르는 호출을 고루틴에서 시작한다. 이 안에서는 s.cands, s.drops, s.got 을 건드리지 않는다.
+// 목록 대상은 지금 방식의 낱말 후보와 같은 자격(대상이고 check 를 통과)인 항목 전체다.
+func (s *sel) startPick() <-chan *pickRun {
+	ch := make(chan *pickRun, 1)
+	go func() {
+		ch <- s.runPick()
+	}()
+	return ch
+}
+
+func (s *sel) runPick() *pickRun {
+	match := func(r *index.Record) string { return s.matchWhen(r, true, "prompt", s.m.Kind) }
+	ids, err := s.ix.IDs()
+	pr := &pickRun{recs: map[string]*index.Record{}}
+	if err != nil {
+		pr.out.Err = err
+		return pr
+	}
+	for _, id := range ids {
+		r, err := s.ix.Item(id)
+		if err != nil {
+			pr.out.Err = err
+			return pr
+		}
+		if len(r.When["action"]) > 0 || !momentOK(r, true, "prompt", s.m.Kind) {
+			continue
+		}
+		if stage, _, _ := s.check(r, match); stage != "" {
+			continue
+		}
+		pr.items = append(pr.items, judge.Item{ID: r.ID, Text: r.Text, About: r.About})
+		pr.recs[r.ID] = r
+	}
+	if len(pr.items) == 0 {
+		if pr.out.Err != nil {
+			return pr
+		}
+		return nil
+	}
+	pr.listTokens = tokens(judge.PickList(pr.items))
+	pr.out = judge.Pick(s.ctx, s.cfg.Judge, s.m.Text, pr.items)
+	return pr
+}
+
+// finishPick 은 고른 항목을 한 건씩 판정해 기록으로 만든다. 지금 방식이 이번 호출에서 판정한 항목은 그 답을 다시 쓴다.
+// 오류는 기록에만 남긴다. s.judges 에는 더하지 않는다.
+func (s *sel) finishPick(pr *pickRun, script map[string]judge.Outcome) *Pick {
+	if pr == nil {
+		return nil
+	}
+	p := &Pick{Listed: len(pr.items), ListTokens: pr.listTokens, MS: pr.out.MS, Unknown: pr.out.Unknown, Items: []Picked{}}
+	if pr.out.Err != nil {
+		p.Error, p.Timeout = true, pr.out.Timeout
+		return p
+	}
+	limit := s.cfg.Judge.Pick.Max
+	if limit <= 0 {
+		limit = config.PickDefaultMax
+	}
+	for _, id := range pr.out.Inject {
+		p.Items = append(p.Items, Picked{ID: id, Direct: true})
+	}
+	for _, id := range pr.out.Maybe {
+		p.Items = append(p.Items, Picked{ID: id})
+	}
+	var wg sync.WaitGroup
+	for i := range p.Items {
+		if i >= limit {
+			break
+		}
+		it := &p.Items[i]
+		it.Judged = true
+		if o, ok := script[it.ID]; ok {
+			it.Reused, it.Inject, it.Error = true, o.Inject, o.Err != nil
+			continue
+		}
+		r := pr.recs[it.ID]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o := judge.AskTimed(s.ctx, s.cfg.Judge, s.m.Text, judge.Item{ID: r.ID, Text: r.Text, About: r.About})
+			it.Inject, it.Error = o.Inject, o.Err != nil
+			for _, c := range o.Calls {
+				it.MS = max(it.MS, c.MS)
+			}
+		}()
+	}
+	wg.Wait()
+	return p
 }
 
 func (s *sel) drop(id, stage, reason string) { s.drops = append(s.drops, Drop{id, stage, reason}) }

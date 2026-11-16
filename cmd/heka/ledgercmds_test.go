@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hee-develop/heka/internal/ledger"
 )
 
 // 지어낸 항목과 두 달에 걸친 원장(깨진 줄 포함)을 가진 데이터 폴더를 만든다.
@@ -250,5 +252,30 @@ func TestRetireCommand(t *testing.T) {
 	// 은퇴한 항목의 기록은 stats 로 여전히 본다.
 	if code, _, _ := runCmd("stats", "topic-ref"); code != 0 {
 		t.Errorf("은퇴 항목 stats: %d", code)
+	}
+}
+
+func TestWhyPick(t *testing.T) {
+	row := ledger.Row{TS: "2026-11-17T01:00:00.000Z", Event: "UserPromptSubmit", Moment: "prompt", Pick: &ledger.Pick{Listed: 14, MS: 2850, Items: []ledger.Picked{
+		{ID: "a", Direct: true, Judged: true, Inject: true},
+		{ID: "b", Judged: true},
+		{ID: "c", Direct: true},
+		{ID: "d", Judged: true, Error: true},
+	}}}
+	want := " | 모델 후보(14건 중, 2850ms): a 바로·판정 넣음, b 후보·판정 넣지 않음, c 바로·판정 안 함, d 후보·판정 오류"
+	if got := whyLine(row); !strings.Contains(got, want) {
+		t.Errorf("모델 후보 줄:\n%s", got)
+	}
+	row.Pick = &ledger.Pick{Listed: 14, Error: true}
+	if got := whyLine(row); !strings.HasSuffix(got, " | 모델 후보: 오류") {
+		t.Errorf("오류: %s", got)
+	}
+	row.Pick = &ledger.Pick{Listed: 2, MS: 10, Items: []ledger.Picked{}}
+	if got := whyLine(row); !strings.HasSuffix(got, " | 모델 후보(2건 중, 10ms): 고른 항목 없음") {
+		t.Errorf("빈 선택: %s", got)
+	}
+	row.Pick = nil
+	if got := whyLine(row); strings.Contains(got, "모델 후보") {
+		t.Errorf("pick 없음: %s", got)
 	}
 }

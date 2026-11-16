@@ -57,6 +57,33 @@ type Judged struct {
 	Timeout bool   `json:"timeout,omitempty"`
 }
 
+// Pick 은 모델이 항목 목록에서 후보를 고른 기록이다(judge.pick.mode: record). 무엇을 넣을지에는 쓰이지 않는다.
+// Listed 는 모델에게 준 항목 수, ListTokens 는 목록 글의 토큰 어림, MS 는 고르는 호출에 걸린 시간(밀리초)이다.
+// Error 는 시간 초과를 포함해 답을 얻지 못했다는 뜻, Timeout 은 그중 시간 안에 끝나지 않았다는 뜻,
+// Unknown 은 목록에 없는 id 를 답한 수다.
+type Pick struct {
+	Listed     int      `json:"listed"`
+	ListTokens int      `json:"list_tokens"`
+	MS         int64    `json:"ms"`
+	Error      bool     `json:"error,omitempty"`
+	Timeout    bool     `json:"timeout,omitempty"`
+	Unknown    int      `json:"unknown,omitempty"`
+	Items      []Picked `json:"items"`
+}
+
+// Picked 는 모델이 고른 항목 하나다. Direct 는 바로 넣으라고 골랐는가(아니면 따져 볼 만하다고 고름),
+// Judged 는 한 건씩 판정을 받았는가, Inject 는 그 판정의 답, Reused 는 지금 방식의 판정을 그대로 썼는가,
+// MS 는 판정에 걸린 시간(다시 쓴 것은 0)이다.
+type Picked struct {
+	ID     string `json:"id"`
+	Direct bool   `json:"direct"`
+	Judged bool   `json:"judged"`
+	Inject bool   `json:"inject"`
+	Reused bool   `json:"reused,omitempty"`
+	MS     int64  `json:"ms,omitempty"`
+	Error  bool   `json:"error,omitempty"`
+}
+
 // Row 는 원장 한 줄이다.
 type Row struct {
 	TS         string     `json:"ts"`
@@ -79,6 +106,7 @@ type Row struct {
 	Checks     []Checked  `json:"checks,omitempty"` // 결과물 검사 결과
 	Judges     []Judged   `json:"judges,omitempty"` // 판정 명령을 부른 기록
 	Shadow     bool       `json:"shadow,omitempty"` // 그림자 방식으로 돈 줄(아무것도 내보내지 않았다)
+	Pick       *Pick      `json:"pick,omitempty"`   // 모델이 목록에서 후보를 고른 기록
 }
 
 // IsHook 은 훅 이벤트(항목을 실제로 넣거나 뺀 판단)의 줄인가. find·add·flag·retire 등의 줄은 아니다.

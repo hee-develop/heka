@@ -44,6 +44,42 @@ type Judge struct {
 	Candidates  int           `yaml:"candidates"`
 	Votes       int           `yaml:"votes"`
 	Instruction string        `yaml:"instruction"`
+	Pick        Pick          `yaml:"pick"`
+}
+
+// Pick 은 모델이 항목 목록에서 후보를 고르는 갈래의 설정이다. Mode 는 off(빈 값 포함) 또는 record 다.
+// record 는 고른 결과를 기록만 하고 무엇을 넣을지에는 쓰지 않는다.
+// Command 가 비면 Judge.Command 를, Timeout 이 0 이면 Judge.Timeout 을 쓴다. Max 는 한 건씩 판정에 올릴 최대 수다.
+type Pick struct {
+	Mode        string        `yaml:"mode"`
+	Command     []string      `yaml:"command"`
+	Timeout     time.Duration `yaml:"timeout"`
+	Max         int           `yaml:"max"`
+	Instruction string        `yaml:"instruction"`
+}
+
+// PickDefaultMax 는 pick.max 가 0 일 때 쓰는 값이다.
+const PickDefaultMax = 8
+
+// PickCommand 는 고르는 호출에 쓸 명령이다. pick.command 가 비면 판정 명령이다.
+func (j Judge) PickCommand() []string {
+	if len(j.Pick.Command) > 0 {
+		return j.Pick.Command
+	}
+	return j.Command
+}
+
+// PickTimeout 은 고르는 호출의 시간 상한이다. pick.timeout 이 0 이면 judge.timeout 이다.
+func (j Judge) PickTimeout() time.Duration {
+	if j.Pick.Timeout > 0 {
+		return j.Pick.Timeout
+	}
+	return j.Timeout
+}
+
+// PickRecording 은 기록 갈래를 돌릴 설정인가. mode 가 record 이고 쓸 명령이 있어야 한다.
+func (j Judge) PickRecording() bool {
+	return j.Pick.Mode == "record" && len(j.PickCommand()) > 0
 }
 
 // Config 는 읽어 둔 설정이다. 빈 값이 유효한 설정이다.
@@ -155,6 +191,22 @@ func (c *Config) validate() error {
 	if len(j.Command) > 0 && strings.TrimSpace(j.Instruction) == "" {
 		return fmt.Errorf("judge.command 가 있으면 judge.instruction 도 있어야 함")
 	}
+	switch j.Pick.Mode {
+	case "", "off", "record":
+	default:
+		return fmt.Errorf("judge.pick.mode 는 off 또는 record 여야 함: %q", j.Pick.Mode)
+	}
+	if j.Pick.Timeout < 0 || j.Pick.Max < 0 {
+		return fmt.Errorf("judge.pick.timeout, judge.pick.max 는 0 이상이어야 함")
+	}
+	if j.Pick.Mode == "record" {
+		if strings.TrimSpace(j.Pick.Instruction) == "" {
+			return fmt.Errorf("judge.pick.mode 가 record 이면 judge.pick.instruction 도 있어야 함")
+		}
+		if len(j.PickCommand()) == 0 {
+			return fmt.Errorf("judge.pick.mode 가 record 이면 judge.pick.command 또는 judge.command 가 있어야 함")
+		}
+	}
 	for k, v := range c.Budgets {
 		if _, ok := DefaultBudgets[k]; !ok || v < 0 {
 			return fmt.Errorf("budgets.%s: 순간 이름(session_start|prompt|tool|subagent_start|find)과 0 이상의 값이어야 함", k)
@@ -171,6 +223,9 @@ func (c *Config) validate() error {
 	}
 	if j.Votes == 0 {
 		j.Votes = 1
+	}
+	if j.Pick.Max == 0 {
+		j.Pick.Max = PickDefaultMax
 	}
 	b := maps.Clone(DefaultBudgets)
 	maps.Copy(b, c.Budgets)

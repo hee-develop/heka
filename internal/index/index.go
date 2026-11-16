@@ -78,6 +78,11 @@ func (x *Index) Item(id string) (*Record, error) {
 	return r, rows.Err()
 }
 
+// IDs 는 색인에 든 모든 항목 id 를 오름차순으로 돌려준다.
+func (x *Index) IDs() ([]string, error) {
+	return x.strings(`SELECT id FROM item ORDER BY id`)
+}
+
 // ByAction 은 그 동작과 그 상위 동작에 조건이 걸린 항목 id 를 정렬해 돌려준다.
 // 상위에 건 조건은 하위에도 걸리고, 하위에 건 조건은 상위 동작만으로는 걸리지 않는다.
 func (x *Index) ByAction(action string) ([]string, error) {
