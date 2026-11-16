@@ -56,6 +56,7 @@ var testItems = map[string]string{
 	"cond-repo":  u + "text: 저장소 조건.\nmust: true\nwhen: {action: x.cond, repo: 'sample-*'}\nabout: [저장소]\nscope: [personal]",
 	"cond-path":  u + "text: 경로 조건.\nmust: true\nwhen: {action: x.cond, path: 'docs/*'}\nabout: [경로]\nscope: [personal]",
 	"cond-agent": u + "text: 에이전트 조건.\nmust: true\nwhen: {action: x.cond, agent: reviewer}\nabout: [에이전트]\nscope: [personal]",
+	"cond-main":  u + "text: 본체에만.\nmust: true\nwhen: {action: x.main, agent: main}\nabout: [본체]\nscope: [personal]",
 	"cond-none":  u + "text: 조건 없음.\nmust: true\nwhen: {action: x.cond}\nabout: [없음]\nscope: [personal]",
 	// 세션 시작, 서브에이전트
 	"start-note": u + "text: 세션 시작 안내.\nmust: true\nwhen: {moment: session_start}\nabout: [안내]\nscope: [personal]",
@@ -238,6 +239,13 @@ func TestToolConditions(t *testing.T) {
 			wantIDs(t, sel1(t, ix, cfg, tt.m), tt.want...)
 		})
 	}
+}
+
+// when.agent 의 main 은 서브에이전트가 아닌 본체의 순간에만 맞는다.
+func TestMainAgentCondition(t *testing.T) {
+	ix, cfg := env(t, testItems, testCfg)
+	wantIDs(t, sel1(t, ix, cfg, Moment{Kind: "tool", Action: "x.main"}), "cond-main")
+	wantIDs(t, sel1(t, ix, cfg, Moment{Kind: "tool", Action: "x.main", Agent: "reviewer"}))
 }
 
 func TestSessionAndSubagent(t *testing.T) {

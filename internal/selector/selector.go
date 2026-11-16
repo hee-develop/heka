@@ -447,7 +447,12 @@ func momentOK(r *index.Record, orEmpty bool, kinds ...string) bool {
 	return slices.ContainsFunc(mo, func(v string) bool { return slices.Contains(kinds, v) })
 }
 
+// MainAgent 는 when.agent 에서 본체(서브에이전트가 아닌 쪽)를 가리키는 이름이다.
+// 순간의 Agent 가 비어 있으면 이 이름으로 견준다. "본체에만" 주는 항목은 when.agent 에 이 이름만 적는다.
+const MainAgent = "main"
+
 // matchWhen 은 moment 와 repo·path·agent 조건을 본다. 항목에 조건이 있는데 순간에 그 값이 없으면 맞지 않는다.
+// agent 만은 값이 없으면 본체(MainAgent)로 본다.
 func (s *sel) matchWhen(r *index.Record, orEmpty bool, kinds ...string) string {
 	if !momentOK(r, orEmpty, kinds...) {
 		return "when.moment 에 " + strings.Join(kinds, "|") + " 가 없음"
@@ -458,6 +463,9 @@ func (s *sel) matchWhen(r *index.Record, orEmpty bool, kinds ...string) string {
 			continue
 		}
 		val := map[string]string{"repo": s.m.Repo, "path": s.m.Path, "agent": s.m.Agent}[k]
+		if k == "agent" && val == "" {
+			val = MainAgent
+		}
 		if val == "" || !slices.ContainsFunc(vs, func(v string) bool {
 			if k == "agent" {
 				return v == val

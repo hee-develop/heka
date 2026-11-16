@@ -211,6 +211,8 @@ claude mcp add --scope user -e HEKA_HOME=/path/to/data heka -- /path/to/heka mcp
 
 `heka resolve --tool Bash --command 'git commit -m x && git push -f'` 처럼 도구 호출 하나를 동작 이름(`git.commit`, `git.push.force`, `code.edit` 등)으로 해석해 JSON 으로 출력합니다. Bash 명령은 `internal/shell` 이 구간과 단어로 나누고 접두(`sudo`, `env`, `exec` 등)와 git 전역 옵션을 벗긴 뒤 읽습니다. Bash 가 아닌 호출 중 도구 이름이나 스킬 이름으로만 알 수 있는 동작은 설정의 `tool_actions` 로 잇습니다(`config.example.yaml` 참고).
 
+항목의 `when.agent` 는 에이전트 종류(`subagent_type`)와 견줍니다. `main` 은 서브에이전트가 아닌 본체를 가리키므로, 본체에만 줄 항목은 `when: {agent: [main]}` 으로 적습니다. 서브에이전트 안의 호출인데 종류가 비어 오면 `subagent` 로 봅니다.
+
 항목의 `when.action` 에 쓴 이름이 설정의 `actions`·`tool_actions` 에도, 해석기가 스스로 내는 이름(`code.edit`, `git.stash`, `git.destructive`, `git.worktree`, `git.create_branch`, `doc.edit`, `test.run`, `agent.delegate` 등)에도 없으면 검증이 경고합니다. 해석기가 내는 이름은 설정에 적지 않아도 되고, `git.push.force` 가 `git.push` 에 속하듯 점으로 이어진 이름의 위쪽도 아는 이름으로 칩니다. 설정에 동작 이름이 하나도 없으면 이 경고는 하지 않습니다.
 
 ## 문서

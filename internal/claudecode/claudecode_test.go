@@ -847,3 +847,19 @@ func TestLedgerJudgesVotes(t *testing.T) {
 		t.Errorf("votes 2 는 호출마다 한 건: %v", js)
 	}
 }
+
+// 서브에이전트 안의 호출은 종류가 비어 와도 본체로 보지 않는다.
+func TestAgentKind(t *testing.T) {
+	for _, tt := range []struct {
+		in   Input
+		want string
+	}{
+		{Input{}, ""},
+		{Input{AgentID: "a1", AgentType: "reviewer"}, "reviewer"},
+		{Input{AgentID: "a1"}, "subagent"},
+	} {
+		if got := tt.in.agentKind(); got != tt.want {
+			t.Errorf("agentKind(%+v) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

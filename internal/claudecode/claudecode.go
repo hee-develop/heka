@@ -56,6 +56,15 @@ type Input struct {
 	StopHookActive       bool   `json:"stop_hook_active"`
 }
 
+// agentKind 는 선별기에 넘길 주체 종류다. 본체면 빈 값이다.
+// 서브에이전트 안의 호출인데 종류가 비어 오면 "subagent" 로 둬서, 본체에만 주는 항목(when.agent: main)이 맞지 않게 한다.
+func (in Input) agentKind() string {
+	if in.AgentType == "" && in.AgentID != "" {
+		return "subagent"
+	}
+	return in.AgentType
+}
+
 // specific 은 hookSpecificOutput 이다.
 type specific struct {
 	HookEventName            string `json:"hookEventName"`
@@ -430,7 +439,7 @@ func (h *handler) preTool(ctx context.Context) (*specific, error) {
 			}
 			for _, p := range paths {
 				m := base
-				m.Action, m.Path, m.Agent = a, p, in.AgentType
+				m.Action, m.Path, m.Agent = a, p, in.agentKind()
 				res, err := h.gather(ctx, m)
 				if err != nil {
 					return nil, err
@@ -547,7 +556,7 @@ func (h *handler) toolChecks(ctx context.Context, actions, paths []string) (deni
 	for _, a := range actions {
 		for _, p := range paths {
 			m := base
-			m.Action, m.Path, m.Agent = a, p, h.in.AgentType
+			m.Action, m.Path, m.Agent = a, p, h.in.agentKind()
 			if err := h.openIndex(); err != nil {
 				return nil, nil, err
 			}
@@ -592,7 +601,7 @@ func (h *handler) toolChecks(ctx context.Context, actions, paths []string) (deni
 // 오류는 검사만 건너뛰고 통과시킨다.
 func (h *handler) stop(ctx context.Context) error {
 	m := h.moment("stop")
-	m.Agent = h.in.AgentType
+	m.Agent = h.in.agentKind()
 	if err := h.openIndex(); err != nil {
 		return err
 	}
