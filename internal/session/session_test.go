@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestPathIsSafe(t *testing.T) {
@@ -106,5 +107,32 @@ func TestUpdateConcurrent(t *testing.T) {
 	wg.Wait()
 	if n := len(Load(home, "x").Shown[""]); n != 40 {
 		t.Errorf("%d 건만 남음", n)
+	}
+}
+
+func TestPromptsAreBounded(t *testing.T) {
+	home := t.TempDir()
+	err := Update(home, "p", func(s *State) {
+		s.AddPrompt(strings.Repeat("가", 5000))
+		for i := 0; i < 60; i++ {
+			s.AddPrompt("프롬프트")
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := Load(home, "p").Prompts
+	if len(got) != 50 || got[0] != "프롬프트" {
+		t.Errorf("최근 50개만 남아야 함: %d개", len(got))
+	}
+	Update(home, "q", func(s *State) { s.AddPrompt(strings.Repeat("가", 5000)) })
+	if r := []rune(Load(home, "q").Prompts[0]); len(r) != 4000 {
+		t.Errorf("한 개 4,000자까지: %d", len(r))
+	}
+	if len(RecentPrompts(home, time.Now().Add(time.Hour))) != 0 {
+		t.Error("기준 시각 이후에 고쳐진 파일만 읽어야 함")
+	}
+	if len(RecentPrompts(home, time.Now().Add(-time.Hour))) != 51 {
+		t.Error("최근 파일의 프롬프트를 모두 모아야 함")
 	}
 }

@@ -88,7 +88,8 @@ negation_window: 8
 
 # budgets: 순간별 토큰 상한. 글자 수 어림은 (UTF-8 바이트 수 + 2) / 3 입니다.
 # 없는 순간은 아래 값이 기본입니다. 넘치면 필수 항목을 먼저 남깁니다.
-budgets: {session_start: 1000, prompt: 300, tool: 300, subagent_start: 300}
+# find 는 조회(heka find, MCP 의 heka_find)의 상한입니다. 넘치면 본문을 빼고, 그래도 안 되면 빠진 목록에 넣습니다.
+budgets: {session_start: 1000, prompt: 300, tool: 300, subagent_start: 300, find: 1500}
 
 # judge: 참고 항목을 넣을지 작은 언어 모델에게 묻는 판정 명령.
 # command 가 없으면 판정 명령이 없는 것이고, 그러면 참고 항목은 프롬프트 순간에 넣지 않습니다.

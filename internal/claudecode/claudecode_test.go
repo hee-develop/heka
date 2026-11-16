@@ -708,3 +708,14 @@ func TestPromptBudgetSumsBranches(t *testing.T) {
 		t.Errorf("예산으로 빠진 주제 항목 = %v", got)
 	}
 }
+
+// 사용자 프롬프트는 세션 상태에 남고(인용 대조용), 도구가 만든 프롬프트는 남지 않는다.
+func TestPromptsRecordedForQuoteCheck(t *testing.T) {
+	e := newEnv(t)
+	e.prompt("q1", "커밋 메시지는 한국어로 써 줘")
+	e.prompt("q1", "<task-notification>도구가 만든 글</task-notification>")
+	got := session.RecentPrompts(e.home, time.Now().Add(-time.Hour))
+	if len(got) != 1 || got[0] != "커밋 메시지는 한국어로 써 줘" {
+		t.Errorf("남은 프롬프트 = %q", got)
+	}
+}
