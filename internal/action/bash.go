@@ -76,17 +76,21 @@ func (s *scan) run(cmd string, depth int) {
 			s.git(ws)
 		case name == "gh" && w1 == "pr":
 			switch w2 {
-			case "create", "merge", "review":
-				s.add("pr." + w2)
+			case "create":
+				s.add(actPRCreate)
+			case "merge":
+				s.add(actPRMerge)
+			case "review":
+				s.add(actPRReview)
 			case "edit":
 				if !slices.Contains(args, "--help") && !slices.Contains(args, "-h") {
-					s.add("pr.edit")
+					s.add(actPREdit)
 				}
 			}
 		case name == "gh" && w1 == "api":
 			s.ghAPI(args[1:])
 		case name == "vitest" || name == "jest":
-			s.add("test.run")
+			s.add(actTestRun)
 		case name == "npm" || name == "yarn" || name == "pnpm" || name == "bun":
 			s.pkgManager(name, w1, w2)
 		case name == "gws":
@@ -177,12 +181,12 @@ func (s *scan) ghAPI(args []string) {
 		method = "POST"
 	}
 	if len(segs) > 0 && segs[len(segs)-1] == "pulls" && method == "POST" {
-		s.add("pr.create")
+		s.add(actPRCreate)
 		return
 	}
 	for i := 0; i+1 < len(segs); i++ {
 		if segs[i] == "pulls" && ghPullNumRe.MatchString(segs[i+1]) && method == "PATCH" {
-			s.add("pr.edit")
+			s.add(actPREdit)
 			return
 		}
 	}
@@ -213,9 +217,9 @@ func (s *scan) pkgManager(name, w1, w2 string) {
 	isTest := func(x string) bool { return strings.HasPrefix(x, "test") }
 	switch {
 	case w1 == "test" || w1 == "t" || (w1 == "run" && isTest(w2)) || (name != "npm" && isTest(w1)):
-		s.add("test.run")
+		s.add(actTestRun)
 	case (name == "yarn" || name == "pnpm") && (w1 == "vitest" || w1 == "jest"):
-		s.add("test.run")
+		s.add(actTestRun)
 	}
 }
 
@@ -246,62 +250,64 @@ func (s *scan) git(ws []string) {
 	switch sub {
 	case "push":
 		if shell.PushForces(rest) {
-			s.add("git.push.force") // 강제 푸시는 git.push 의 하위이므로 이 이름 하나만 낸다
+			s.add(actGitPushForce) // 강제 푸시는 git.push 의 하위이므로 이 이름 하나만 낸다
 		} else {
-			s.add("git.push")
+			s.add(actGitPush)
 		}
-	case "commit", "rebase":
-		s.add("git." + sub)
+	case "commit":
+		s.add(actGitCommit)
+	case "rebase":
+		s.add(actGitRebase)
 	case "reset":
 		if has("--hard") {
-			s.add("git.destructive")
+			s.add(actGitDestructive)
 		}
 	case "reflog":
 		if len(rest) > 0 && rest[0] == "expire" {
-			s.add("git.destructive")
+			s.add(actGitDestructive)
 		}
 	case "gc":
 		if anyRest(func(a string) bool { return a == "--prune" || strings.HasPrefix(a, "--prune=") }) {
-			s.add("git.destructive")
+			s.add(actGitDestructive)
 		}
 	case "clean":
 		if anyRest(func(a string) bool { return a == "--force" || shortHas(a, "f") }) {
-			s.add("git.destructive")
+			s.add(actGitDestructive)
 		}
 	case "branch":
 		switch {
 		case anyRest(func(a string) bool { return a == "-D" || shortHas(a, "D") }):
-			s.add("git.destructive")
+			s.add(actGitDestructive)
 		case anyRest(func(a string) bool {
 			return slices.Contains(branchBenign, a) || strings.HasPrefix(a, "--format") || strings.HasPrefix(a, "--sort") || strings.HasPrefix(a, "--set-upstream-to=")
 		}):
 		case len(nonOpt) > 0:
-			s.add("git.create_branch")
+			s.add(actGitCreateBranch)
 		}
 	case "checkout":
 		if has("-b", "-B", "--orphan") {
-			s.add("git.create_branch")
+			s.add(actGitCreateBranch)
 			return
 		}
 		dd := slices.Index(rest, "--")
 		if (dd >= 0 && slices.ContainsFunc(rest[dd+1:], whole)) || (dd < 0 && len(nonOpt) == 1 && nonOpt[0] == ".") {
-			s.add("git.destructive")
+			s.add(actGitDestructive)
 		}
 	case "restore":
 		if (!has("--staged", "-S") || has("--worktree", "-W")) && slices.ContainsFunc(nonOpt, whole) {
-			s.add("git.destructive")
+			s.add(actGitDestructive)
 		}
 	case "switch":
 		if has("-c", "-C", "--create", "--force-create", "--orphan") {
-			s.add("git.create_branch")
+			s.add(actGitCreateBranch)
 		}
 	case "stash":
 		if len(rest) == 0 || (rest[0] != "list" && rest[0] != "show") {
-			s.add("git.stash")
+			s.add(actGitStash)
 		}
 	case "worktree":
 		if len(rest) > 0 && slices.Contains([]string{"add", "remove", "prune", "move"}, rest[0]) {
-			s.add("git.worktree")
+			s.add(actGitWorktree)
 		}
 	}
 }
@@ -319,11 +325,11 @@ func (s *scan) gws(args []string) {
 			continue
 		}
 		if slices.Contains(gwsWrite, a) {
-			s.add("gws.write")
+			s.add(actGwsWrite)
 			return
 		}
 	}
-	s.add("gws.read")
+	s.add(actGwsRead)
 }
 
 var rmSuffixRe = regexp.MustCompile(`/\*$`)
@@ -350,7 +356,7 @@ func (s *scan) rm(args []string) {
 		t := rmHomeRe.ReplaceAllString(rmSuffixRe.ReplaceAllString(raw, "/"), "~")
 		switch t {
 		case "/", "~", "~/", ".", "./", "*", "..", "../":
-			s.add("fs.destructive")
+			s.add(actFSDestructive)
 			return
 		}
 		if base == "" {
@@ -365,7 +371,7 @@ func (s *scan) rm(args []string) {
 		}
 		abs = filepath.Clean(abs)
 		if base == abs || strings.HasPrefix(base, strings.TrimSuffix(abs, "/")+"/") {
-			s.add("fs.destructive")
+			s.add(actFSDestructive)
 			return
 		}
 	}

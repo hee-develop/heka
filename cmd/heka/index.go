@@ -5,6 +5,7 @@ import (
 	"io"
 	"path/filepath"
 
+	"github.com/hee-develop/heka/internal/action"
 	"github.com/hee-develop/heka/internal/config"
 	"github.com/hee-develop/heka/internal/index"
 	"github.com/hee-develop/heka/internal/item"
@@ -73,6 +74,6 @@ func loadItems(home string, cfg *config.Config) (string, []*item.Item, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	items, err := item.LoadDir(filepath.Join(home, "items"), cfg.ActionVocab())
+	items, err := item.LoadDir(filepath.Join(home, "items"), action.Vocab(cfg))
 	return fp, items, err
 }
