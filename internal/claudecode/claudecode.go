@@ -165,17 +165,26 @@ func (h *handler) moment(kind string) selector.Moment {
 	return selector.Moment{Kind: kind, Scopes: scopes, Repo: repo, Seen: seen, Today: h.now.Format("2006-01-02")}
 }
 
-// choose 는 색인을 열고(낡았으면 먼저 다시 만들고) 순간 하나를 선별한다.
+// openIndex 는 색인을 열고(낡았으면 먼저 다시 만들고) 이 처리 안에서 다시 쓴다.
+func (h *handler) openIndex() error {
+	if h.ix != nil {
+		return nil
+	}
+	if err := index.Ensure(h.home, h.cfg); err != nil {
+		return err
+	}
+	ix, err := index.Open(h.home)
+	if err != nil {
+		return err
+	}
+	h.ix = ix
+	return nil
+}
+
+// choose 는 순간 하나를 선별한다. 예산까지 적용한 결과다.
 func (h *handler) choose(ctx context.Context, m selector.Moment) (selector.Result, error) {
-	if h.ix == nil {
-		if err := index.Ensure(h.home, h.cfg); err != nil {
-			return selector.Result{}, err
-		}
-		ix, err := index.Open(h.home)
-		if err != nil {
-			return selector.Result{}, err
-		}
-		h.ix = ix
+	if err := h.openIndex(); err != nil {
+		return selector.Result{}, err
 	}
 	return selector.Select(ctx, h.ix, h.cfg, m)
 }
@@ -204,6 +213,14 @@ func (h *handler) claim(ctx context.Context, injs []selector.Injection, extra fu
 		h.row.Injected = append(h.row.Injected, ledger.Injected{ID: i.ID, Hash: i.Hash, Why: i.Why})
 	}
 	return out, nil
+}
+
+// gather 는 choose 와 같되 예산을 적용하지 않은 후보를 돌려준다. 여러 번 부른 결과를 모아 예산을 한 번 적용할 때 쓴다.
+func (h *handler) gather(ctx context.Context, m selector.Moment) (selector.Result, error) {
+	if err := h.openIndex(); err != nil {
+		return selector.Result{}, err
+	}
+	return selector.Gather(ctx, h.ix, h.cfg, m)
 }
 
 // record 는 선별 결과의 탈락과 동작을 원장 줄에 옮긴다.
@@ -358,7 +375,7 @@ func (h *handler) preTool(ctx context.Context) (*specific, error) {
 			for _, p := range paths {
 				m := base
 				m.Action, m.Path, m.Agent = a, p, in.AgentType
-				res, err := h.choose(ctx, m)
+				res, err := h.gather(ctx, m)
 				if err != nil {
 					return nil, err
 				}
@@ -375,7 +392,22 @@ func (h *handler) preTool(ctx context.Context) (*specific, error) {
 			}
 		}
 	}
-	h.record(selector.Result{Drops: dedupDrops(drops, byID)})
+	// 동작·경로마다 모은 후보를 한데 모은 뒤 예산을 한 번만 적용한다. 도구 호출 하나가 넣는 글 전체가 상한을 넘지 않게 한다.
+	// 예산으로 빠진 항목은 탈락으로 남고 "이미 넣은 항목"에 들어가지 않으므로 다음 호출에서 다시 후보가 된다.
+	drops = dedupDrops(drops, byID)
+	cands := make([]selector.Injection, len(hits))
+	for i, x := range hits {
+		cands[i] = x.inj
+	}
+	kept, drops := selector.Fit(h.cfg, "tool", cands, drops)
+	keptHits := hits[:0:0]
+	for _, k := range kept {
+		x := byID[k.ID]
+		x.inj = k
+		keptHits = append(keptHits, x)
+	}
+	hits = keptHits
+	h.record(selector.Result{Drops: drops})
 
 	// 확인 요구를 가른다. 허용은 그 동작이나 상위 동작에 있어야 하고, 걸린 동작이 여럿이면 모두에 있어야 한다.
 	state := session.Load(h.home, in.SessionID)

@@ -581,3 +581,130 @@ func TestSettings(t *testing.T) {
 		}
 	}
 }
+
+// onlyItems 는 시험 환경의 항목을 모두 지우고 주어진 것만 둔다. extra 는 설정 끝에 덧붙인다.
+func (e *testEnv) onlyItems(items map[string]string, extra string) {
+	e.t.Helper()
+	if err := os.RemoveAll(filepath.Join(e.home, "items")); err != nil {
+		e.t.Fatal(err)
+	}
+	for id, body := range items {
+		about := ""
+		if !strings.Contains(body, "about:") {
+			about = "about: [" + id + "]\n"
+		}
+		e.write(filepath.Join("items", id+".md"), "---\nid: "+id+"\nsource: user\nquote: 지어낸 말\n"+about+"scope: [repo/sample-app]\n"+body+"\n---\n")
+	}
+	cfg, err := os.ReadFile(filepath.Join(e.home, "config.yaml"))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	e.write("config.yaml", string(cfg)+extra)
+}
+
+// injectedTokens 는 넣은 글의 항목마다 토큰 어림((바이트 + 2) / 3)을 더한다.
+func injectedTokens(h *hookOut) int {
+	if h == nil {
+		return 0
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimPrefix(h.Specific.Context, "[heka]"), "\n- ")[1:] {
+		n += (len(line) + 2) / 3
+	}
+	return n
+}
+
+// droppedByBudget 은 원장의 마지막 줄에서 예산 단계로 빠진 항목 id 다.
+func (e *testEnv) droppedByBudget() []string {
+	e.t.Helper()
+	rows := e.ledgerRows()
+	var ids []string
+	for _, d := range rows[len(rows)-1]["dropped"].([]any) {
+		if m := d.(map[string]any); m["stage"] == "예산" {
+			ids = append(ids, m["id"].(string))
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// 동작이 둘인 명령도 한 번의 도구 호출이 넣는 글 전체가 상한 이하여야 한다.
+// 필수가 먼저 남고, 안 들어가는 항목은 건너뛰며, 예산으로 빠진 항목은 다음 호출에서 다시 후보가 된다.
+func TestToolBudgetIsPerCall(t *testing.T) {
+	e := newEnv(t)
+	e.onlyItems(map[string]string{
+		"must-c": "text: 커밋 필수 규칙을 따른다.\nmust: true\nwhen: {action: git.commit}", // 12토큰
+		"must-p": "text: 푸시 필수 규칙을 따른다.\nmust: true\nwhen: {action: git.push}",   // 12토큰
+		"ref-c":  "text: 커밋 참고 안내문이다.\nwhen: {action: git.commit}",               // 본문 10 + 꼬리 3
+		"ref-p":  "text: 푸시 참고 안내문이다.\nwhen: {action: git.push}",                 // 본문 10 + 꼬리 3
+		"ref-s":  "text: 짧다.\nwhen: {action: git.push}",                          // 본문 3 + 꼬리 3
+	}, "budgets: {tool: 30}\n")
+	cmd := "git commit -m x && git push"
+
+	h := e.bash("s", cmd)
+	wantContext(t, h, "PreToolUse", "커밋 필수 규칙", "푸시 필수 규칙", "짧다.")
+	if got := injectedTokens(h); got > 30 {
+		t.Errorf("한 번의 호출이 넣은 글이 상한 30 을 넘음: %d토큰\n%s", got, h.Specific.Context)
+	}
+	if strings.Contains(h.Specific.Context, "참고 안내문") {
+		t.Errorf("자리가 없는 항목이 들어감: %s", h.Specific.Context)
+	}
+	if got := e.droppedByBudget(); !slices.Equal(got, []string{"ref-c", "ref-p"}) {
+		t.Errorf("예산으로 빠진 항목 = %v", got)
+	}
+
+	// 빠진 항목은 "이미 넣은 항목"에 없으므로 다음 호출에서 다시 나오고, 넣은 항목은 다시 나오지 않는다.
+	h = e.bash("s", cmd)
+	wantContext(t, h, "PreToolUse", "커밋 참고 안내문", "푸시 참고 안내문")
+	for _, s := range []string{"필수 규칙", "짧다."} {
+		if strings.Contains(h.Specific.Context, s) {
+			t.Errorf("이미 넣은 항목이 다시 나옴: %s", h.Specific.Context)
+		}
+	}
+	if got := injectedTokens(h); got > 30 {
+		t.Errorf("두 번째 호출이 상한을 넘음: %d토큰", got)
+	}
+	if got := e.droppedByBudget(); len(got) != 0 {
+		t.Errorf("두 번째 호출에는 예산 탈락이 없어야 함: %v", got)
+	}
+	if h := e.bash("s", cmd); h != nil {
+		t.Errorf("모두 넣은 뒤에는 출력이 없어야 함: %+v", h)
+	}
+}
+
+// 쓰기 경로가 여럿인 호출(리다이렉션과 동작이 겹침)에서도 같은 동작의 항목은 한 번만 세고 예산은 한 번만 쓴다.
+func TestToolBudgetAcrossPaths(t *testing.T) {
+	e := newEnv(t)
+	e.onlyItems(map[string]string{
+		"edit-a": "text: 편집 규칙 가나다라마.\nmust: true\nwhen: {action: code.edit}", // 12토큰
+		"edit-b": "text: 편집 안내 가나다라마.\nwhen: {action: code.edit}",             // 본문 11 + 꼬리 3
+	}, "budgets: {tool: 16}\n")
+	t.Setenv("TMPDIR", "") // 시험 작업 폴더가 임시 폴더 밑이라 쓰기 대상에서 빠지지 않게 한다
+	h := e.bash("s", "echo x > a.ts && echo y > b.ts")
+	wantContext(t, h, "PreToolUse", "편집 규칙")
+	if got := injectedTokens(h); got != 10 || strings.Contains(h.Specific.Context, "편집 안내") {
+		t.Errorf("경로가 둘이어도 항목은 한 번, 상한 16 안: %d토큰 %s", got, h.Specific.Context)
+	}
+	if got := e.droppedByBudget(); !slices.Equal(got, []string{"edit-b"}) {
+		t.Errorf("예산 탈락은 한 번만: %v", got)
+	}
+}
+
+// 프롬프트 순간은 동작 갈래와 주제 갈래를 합친 글이 상한 이하여야 한다.
+func TestPromptBudgetSumsBranches(t *testing.T) {
+	e := newEnv(t)
+	e.onlyItems(map[string]string{
+		"act-must": "text: 커밋 필수 규칙을 따른다.\nmust: true\nwhen: {action: git.commit}",
+		"topic-1":  "text: 주제 안내 첫째 글이다.\nwhen: {moment: prompt}\nabout: [제타]",
+		"topic-2":  "text: 주제 안내 둘째 글이다.\nwhen: {moment: prompt}\nabout: [제타]",
+		"topic-3":  "text: 주제 안내 셋째 글이다.\nwhen: {moment: prompt}\nabout: [제타]",
+	}, "budgets: {prompt: 30}\n")
+	h := e.prompt("p", "커밋해 줘. 제타 zeta-token 에 관한 것이야")
+	wantContext(t, h, "UserPromptSubmit", "커밋 필수 규칙")
+	if got := injectedTokens(h); got > 30 || strings.Count(h.Specific.Context, "주제 안내") != 1 {
+		t.Errorf("동작 갈래와 주제 갈래를 합친 글이 상한 30 을 넘거나 주제가 1건이 아님: %d토큰\n%s", got, h.Specific.Context)
+	}
+	if got := e.droppedByBudget(); len(got) != 2 {
+		t.Errorf("예산으로 빠진 주제 항목 = %v", got)
+	}
+}

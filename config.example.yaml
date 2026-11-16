@@ -54,9 +54,15 @@ actions:
     in: git.write
     phrases:
       - '(?:리베이스|rebase)\s*(?:을|를|도|까지|만)?\s*(?:해|하지\s*(?:마|말|않|못)|하고|한\s*뒤|한\s*다음|하자|진행|부탁|ㄱ)'
+  # PR 본문에 관한 규칙은 pr.write 에 겁니다. PR 을 만드는 호출(pr.create)과 고치는 호출(pr.edit)이 모두 걸립니다.
+  # (gh pr edit, gh api 로 PR 을 PATCH 하는 호출이 pr.edit 이고, gh pr create, gh api 로 PR 을 만드는 호출이 pr.create 입니다.)
+  pr.write: {}
   pr.create:
+    in: pr.write
     phrases:
       - '(?:pr|풀\s*리퀘(?:스트)?)\s*(?:을|를|도|까지)?\s*(?:생성|만들|올려|열어)'
+  pr.edit:
+    in: pr.write
 
 # tool_actions: 도구 이름이나 스킬 이름으로만 알 수 있는 동작을 잇습니다.
 # 키는 도구 이름, "Skill:<스킬 이름>"(플러그인 접두가 붙은 이름도 접두를 뗀 이름으로 맞습니다),

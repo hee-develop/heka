@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -158,6 +159,12 @@ func TestExampleFile(t *testing.T) {
 	for _, a := range []string{"git.commit", "git.push", "git.push.force", "git.rebase", "pr.create"} {
 		if len(c.Actions[a].Phrases) == 0 {
 			t.Errorf("예시 설정에 %s 의 표현이 없음", a)
+		}
+	}
+	// PR 본문 규칙은 pr.write 에 건다: pr.create 와 pr.edit 의 상위에 pr.write 가 들어가야 한다.
+	for _, a := range []string{"pr.create", "pr.edit"} {
+		if !slices.Contains(c.ActionClosure(a), "pr.write") || !reflect.DeepEqual(c.Actions[a].In, item.List{"pr.write"}) {
+			t.Errorf("예시 설정에서 %s 가 pr.write 에 들어가야 함: %v", a, c.ActionClosure(a))
 		}
 	}
 	if len(c.Negations) == 0 || len(c.Judge.Command) != 0 || !strings.Contains(c.Judge.Instruction, "선별기") || !reflect.DeepEqual(c.GlobalScopes, item.List{"personal"}) {
