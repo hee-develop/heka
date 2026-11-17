@@ -15,6 +15,9 @@ import (
 // ErrNotFound 는 그 id 의 항목이 색인에 없다는 뜻이다.
 var ErrNotFound = errors.New("항목이 색인에 없음")
 
+// ErrOldSchema 는 색인 파일이 지금 꼴이 아니라는 뜻이다. heka index 로 다시 만들면 된다.
+var ErrOldSchema = errors.New("색인 파일이 옛 꼴임: heka index 로 다시 색인하세요")
+
 // Index 는 읽기 전용으로 연 색인이다.
 type Index struct{ db *sql.DB }
 
@@ -32,6 +35,11 @@ func Open(home string) (*Index, error) {
 		db.Close()
 		return nil, err
 	}
+	var schema string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key='schema'`).Scan(&schema); err != nil || schema != schemaVersion {
+		db.Close()
+		return nil, ErrOldSchema
+	}
 	return &Index{db}, nil
 }
 
@@ -42,6 +50,7 @@ func (x *Index) Close() error { return x.db.Close() }
 type Record struct {
 	ID, Text, Source, Quote, Checked, Expires, Confirm, CheckJSON, Body, Hash string
 	Must                                                                      bool
+	Push                                                                      bool // false 면 조회 전용 항목
 	Scope, About                                                              []string
 	When                                                                      map[string][]string // 종류 -> 값
 }
@@ -49,8 +58,8 @@ type Record struct {
 // Item 은 id 로 항목을 읽는다. 없으면 ErrNotFound.
 func (x *Index) Item(id string) (*Record, error) {
 	r := &Record{When: map[string][]string{}}
-	err := x.db.QueryRow(`SELECT id,text,must,source,quote,checked,expires,confirm,check_json,body,hash FROM item WHERE id=?`, id).
-		Scan(&r.ID, &r.Text, &r.Must, &r.Source, &r.Quote, &r.Checked, &r.Expires, &r.Confirm, &r.CheckJSON, &r.Body, &r.Hash)
+	err := x.db.QueryRow(`SELECT id,text,must,source,quote,checked,expires,confirm,check_json,body,hash,push FROM item WHERE id=?`, id).
+		Scan(&r.ID, &r.Text, &r.Must, &r.Source, &r.Quote, &r.Checked, &r.Expires, &r.Confirm, &r.CheckJSON, &r.Body, &r.Hash, &r.Push)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

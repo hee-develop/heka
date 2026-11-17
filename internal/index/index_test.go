@@ -1,6 +1,8 @@
 package index
 
 import (
+	"database/sql"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -242,5 +244,58 @@ func TestReadOnly(t *testing.T) {
 	ix := open(t, setup(t))
 	if _, err := ix.db.Exec(`INSERT INTO meta VALUES('x','y')`); err == nil {
 		t.Error("읽기 전용이어야 함")
+	}
+}
+
+func TestPushColumnAndOldSchema(t *testing.T) {
+	home := t.TempDir()
+	os.WriteFile(filepath.Join(home, "config.yaml"), []byte(cfgYAML), 0o644)
+	mk(t, home, "normal", "text: 보통 항목.\nabout: [보통]\nscope: [repo/sample-app]\nsource: doc")
+	mk(t, home, "find-only", "text: 조회 전용 항목.\nabout: [조회 전용]\nscope: [repo/sample-app]\nsource: doc\npush: false")
+	build(t, home)
+	ix := open(t, home)
+	for id, want := range map[string]bool{"normal": true, "find-only": false} {
+		r, err := ix.Item(id)
+		if err != nil || r.Push != want {
+			t.Errorf("%s: Push=%v 기대 %v (%v)", id, r.Push, want, err)
+		}
+	}
+	// 조회 전용 항목도 낱말·주제어 색인에는 들어간다.
+	if got, _ := ix.Lexical("조회 전용 항목", 5); len(got) == 0 || got[0].ID != "find-only" {
+		t.Errorf("낱말 색인: %+v", got)
+	}
+	if got, _ := ix.AboutMatches("조회 전용"); len(got) != 1 || got[0].ID != "find-only" {
+		t.Errorf("주제어 색인: %+v", got)
+	}
+	ix.Close()
+
+	// 옛 꼴의 색인(스키마 1)은 Open 이 거절하고, Stale 이 낡았다고 하며, Ensure 가 다시 만든다.
+	db, err := sql.Open("sqlite", Path(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE meta SET value='1' WHERE key='schema'`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if _, err := Open(home); !errors.Is(err, ErrOldSchema) {
+		t.Errorf("옛 색인 Open = %v", err)
+	}
+	if !Stale(home) {
+		t.Error("옛 색인은 낡은 것으로 봐야 함")
+	}
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Ensure(home, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if Stale(home) {
+		t.Error("다시 만든 뒤에는 낡지 않아야 함")
+	}
+	ix2 := open(t, home)
+	if r, err := ix2.Item("find-only"); err != nil || r.Push {
+		t.Errorf("다시 만든 색인: %+v %v", r, err)
 	}
 }

@@ -279,3 +279,31 @@ func TestWhyPick(t *testing.T) {
 		t.Errorf("pick 없음: %s", got)
 	}
 }
+
+func TestListFindOnly(t *testing.T) {
+	home := ledgerHome(t)
+	body := "---\nid: fo-note\ntext: 지어낸 노트.\nabout: [노트]\nscope: [personal]\nsource: doc\npush: false\n---\n"
+	if err := os.WriteFile(filepath.Join(home, "items", "fo-note.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, out, _ := runCmd("list", "--find-only")
+	if strings.Count(out, "\n") != 1 || !strings.HasPrefix(out, "fo-note  참고") || !strings.Contains(out, "조회 전용") {
+		t.Errorf("--find-only: %q", out)
+	}
+	_, out, _ = runCmd("list")
+	if strings.Count(out, "\n") != 4 || strings.Count(out, "조회 전용") != 1 {
+		t.Errorf("전체 목록에 표시: %q", out)
+	}
+	_, out, _ = runCmd("list", "--json", "--find-only")
+	var got []struct {
+		ID   string
+		Push *bool
+	}
+	if json.Unmarshal([]byte(out), &got) != nil || len(got) != 1 || got[0].Push == nil || *got[0].Push {
+		t.Errorf("--json --find-only: %q", out)
+	}
+	_, out, _ = runCmd("list", "--json", "--must")
+	if strings.Contains(out, `"push"`) {
+		t.Errorf("true 인 항목의 JSON 에 push 가 없어야 함: %q", out)
+	}
+}

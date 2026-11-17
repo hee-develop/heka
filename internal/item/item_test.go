@@ -159,3 +159,59 @@ func TestLoadDirSkipsSubdirs(t *testing.T) {
 		t.Errorf("폴더가 없으면 빈 목록: %v %v", none, err)
 	}
 }
+
+// pushHead 는 push 시험용 머리말이다. extra 를 끝에 붙인다.
+func pushHead(extra string) string {
+	return "---\nid: note-1\ntext: 지어낸 노트.\nabout: [노트]\nscope: [personal]\nsource: doc\n" + extra + "\n---\n"
+}
+
+func TestPushParsing(t *testing.T) {
+	for _, tc := range []struct {
+		extra string
+		want  bool
+	}{{"", true}, {"push: true", true}, {"push: false", false}} {
+		it, err := Parse(put(t, t.TempDir(), "note-1.md", pushHead(tc.extra)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !it.Valid() || len(it.Problems) != 0 || it.Pushes() != tc.want {
+			t.Errorf("%q: Pushes=%v 기대 %v, 문제 %v", tc.extra, it.Pushes(), tc.want, it.Problems)
+		}
+	}
+	// 기존 항목 파일(필드 없음)은 그대로 유효하다.
+	it, _ := Parse(put(t, t.TempDir(), "commit-message-language.md", good))
+	if !it.Valid() || !it.Pushes() {
+		t.Errorf("기존 항목: %v", it.Problems)
+	}
+	if ps := problems(t, "note-1.md", pushHead("push: 아니오")); !has(ps, Error, "해석 실패") {
+		t.Errorf("bool 이 아닌 push: %v", ps)
+	}
+}
+
+func TestPushFalseConflicts(t *testing.T) {
+	for _, tc := range []struct{ name, extra, sub string }{
+		{"must", "push: false\nmust: true\nwhen: {action: git.push}", "must: true 가 있음"},
+		{"when", "push: false\nwhen: {path: 'docs/*'}", "when 에 조건이 있음"},
+		{"confirm-true", "push: false\nconfirm: true", "confirm 이 true 임"},
+		{"confirm-always", "push: false\nconfirm: always", "confirm 이 always 임"},
+		{"check", "push: false\ncheck: {target: command, pattern: x, mode: log}", "check 가 있음"},
+	} {
+		if ps := problems(t, "note-1.md", pushHead(tc.extra)); !has(ps, Error, "push: false 인데") || !has(ps, Error, tc.sub) {
+			t.Errorf("%s: %v", tc.name, ps)
+		}
+	}
+	// push: true 이거나 없으면 같은 필드를 함께 둘 수 있다.
+	if ps := problems(t, "note-1.md", pushHead("push: true\nconfirm: always\nwhen: {action: git.push}")); has(ps, Error, "push") || has(ps, Error, "") {
+		t.Errorf("push: true: %v", ps)
+	}
+	// confirm: false 는 함께 둘 수 있다.
+	if ps := problems(t, "note-1.md", pushHead("push: false\nconfirm: false")); has(ps, Error, "") {
+		t.Errorf("confirm: false: %v", ps)
+	}
+}
+
+func TestPushKnownKey(t *testing.T) {
+	if ps := problems(t, "note-1.md", pushHead("push: false")); has(ps, Warn, "모르는 머리말 키") {
+		t.Errorf("push 는 아는 키여야 함: %v", ps)
+	}
+}

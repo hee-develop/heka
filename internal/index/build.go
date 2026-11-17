@@ -23,11 +23,11 @@ import (
 	_ "modernc.org/sqlite" // 순수 Go SQLite 드라이버
 )
 
-const schemaVersion = "1"
+const schemaVersion = "2"
 
 const ddl = `
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE item(id TEXT PRIMARY KEY, text TEXT, must INTEGER, source TEXT, quote TEXT, checked TEXT, expires TEXT, confirm TEXT, check_json TEXT, body TEXT, hash TEXT);
+CREATE TABLE item(id TEXT PRIMARY KEY, text TEXT, must INTEGER, source TEXT, quote TEXT, checked TEXT, expires TEXT, confirm TEXT, check_json TEXT, body TEXT, hash TEXT, push INTEGER);
 CREATE TABLE item_scope(id TEXT, scope TEXT);
 CREATE TABLE item_when(id TEXT, kind TEXT, value TEXT);
 CREATE TABLE item_about(id TEXT, term TEXT, norm TEXT);
@@ -117,8 +117,8 @@ func fill(db *sql.DB, items []*item.Item, cfg *config.Config, fingerprint string
 			b, _ := json.Marshal(it.Check)
 			chk = string(b)
 		}
-		exec(`INSERT INTO item VALUES(?,?,?,?,?,?,?,?,?,?,?)`, it.ID, it.Text, it.Must, it.Source, it.Quote,
-			string(it.Checked), string(it.Expires), it.ConfirmValue(), chk, it.Body, it.Hash)
+		exec(`INSERT INTO item VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, it.ID, it.Text, it.Must, it.Source, it.Quote,
+			string(it.Checked), string(it.Expires), it.ConfirmValue(), chk, it.Body, it.Hash, it.Pushes())
 		for _, s := range it.Scope {
 			scopes[s] = true
 			exec(`INSERT INTO item_scope VALUES(?,?)`, it.ID, s)
@@ -201,7 +201,10 @@ func Stale(home string) bool {
 		return true
 	}
 	defer ix.Close()
-	var fp string
+	var schema, fp string
+	if err := ix.db.QueryRow(`SELECT value FROM meta WHERE key='schema'`).Scan(&schema); err != nil || schema != schemaVersion {
+		return true // 옛 꼴의 색인은 항목이 그대로여도 다시 만든다.
+	}
 	if err := ix.db.QueryRow(`SELECT value FROM meta WHERE key='fingerprint'`).Scan(&fp); err != nil {
 		return true
 	}

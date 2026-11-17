@@ -31,6 +31,21 @@ heka는 AI 에이전트가 일하는 각 순간에, 그 순간에 필요한 컨�
 
 훅 등록은 직접 합니다. `heka hook --print-settings` 가 낸 JSON 을 Claude Code 설정 파일의 `hooks` 에 넣으세요.
 
+## 조회 전용 항목: push
+
+머리말에 `push: false` 를 쓰면 `heka find` 와 MCP 조회로만 찾고 heka 가 스스로 넣지 않는 항목이 됩니다. 세션 시작, 프롬프트, 도구 호출, 서브에이전트 시작 어디에서도 후보가 아니고, 원장에 탈락으로도 남지 않습니다. `push` 가 없으면 true 입니다. `must: true`, `when`, `confirm: true|always`, `check` 와는 함께 쓸 수 없고(검증 오류), 목록은 `heka list --find-only` 로 봅니다. 색인 꼴이 바뀌었으므로 옛 색인 파일은 다음 실행에서 자동으로 다시 만들어집니다.
+
+```yaml
+---
+id: old-note-0001
+text: 지어낸 옛 노트의 요약 한 줄.
+about: [옛 노트]
+scope: personal
+source: doc
+push: false
+---
+```
+
 ## 결과물 검사
 
 항목에 `check` 를 붙이면 모델이 낸 결과물을 정규식과 견줍니다. 예: 커밋 메시지의 첫 줄을 50자 이내로 제한하는 항목입니다.
@@ -102,6 +117,8 @@ heka find [--scope S]... [--budget N] [--limit K] [--json] <질의…>
 }
 ```
 
+조회 전용 항목(아래 `push: false`)이면 글 출력의 메타에 `push=false` 가, JSON 에는 `"push": false` 가 붙습니다(`push` 가 true 인 항목에는 이 필드가 없습니다).
+
 `when` 은 항목의 조건(`moment`, `action`, `path`, `repo`, `agent` 중 있는 것)이고, `body_omitted` 는 예산 때문에 본문을 뺀 항목에만 있습니다. `score` 는 낱말 점수(0~1)입니다.
 
 ## 등록: heka add, heka pending
@@ -136,7 +153,7 @@ heka pending drop <대기 id>                   # 대기함에서 지움
 ```sh
 heka why [--session <id>] [--last N] [--id <항목 id>] [--json]
 heka judge-stats [--json] [--since YYYY-MM-DD]
-heka list [--json] [--agent <종류>] [--must] [--flagged] [--violated N]
+heka list [--json] [--agent <종류>] [--must] [--flagged] [--find-only] [--violated N]
 heka stats <id> [--json]
 heka retire <id> --reason <글>
 ```

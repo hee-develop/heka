@@ -107,6 +107,7 @@ type Item struct {
 	Expires text   `yaml:"expires"`
 	Confirm text   `yaml:"confirm"` // false(기본)|true|always
 	Check   *Check `yaml:"check"`
+	Push    *bool  `yaml:"push"` // 없으면 true. false 면 조회 전용(heka 가 스스로 넣지 않음)
 
 	Body     string    `yaml:"-"`
 	Hash     string    `yaml:"-"` // 파일 전체 sha256 의 앞 16자
@@ -124,6 +125,9 @@ func (it *Item) Valid() bool {
 	return true
 }
 
+// Pushes 는 heka 가 스스로 넣을 수 있는 항목인가. push 가 없으면 true 다.
+func (it *Item) Pushes() bool { return it.Push == nil || *it.Push }
+
 // ConfirmValue 는 정규화한 confirm 값이다(빈 값은 false).
 func (it *Item) ConfirmValue() string {
 	if it.Confirm == "" {
@@ -134,7 +138,7 @@ func (it *Item) ConfirmValue() string {
 
 var (
 	idRe      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-	known     = map[string]bool{"id": true, "text": true, "must": true, "when": true, "about": true, "scope": true, "source": true, "quote": true, "checked": true, "expires": true, "confirm": true, "check": true}
+	known     = map[string]bool{"id": true, "text": true, "must": true, "when": true, "about": true, "scope": true, "source": true, "quote": true, "checked": true, "expires": true, "confirm": true, "check": true, "push": true}
 	knownWhen = map[string]bool{"moment": true, "action": true, "path": true, "repo": true, "agent": true}
 	knownChk  = map[string]bool{"target": true, "pattern": true, "not_pattern": true, "mode": true}
 	moments   = map[string]bool{"session_start": true, "prompt": true, "tool": true, "subagent_start": true}
@@ -226,6 +230,20 @@ func (it *Item) validate(m *yaml.Node, add func(level, format string, a ...any))
 	}
 	if it.Check != nil {
 		it.validateCheck(add)
+	}
+	if !it.Pushes() {
+		if it.Must {
+			add(Error, "push: false 인데 must: true 가 있음(조회 전용 항목은 필수일 수 없음)")
+		}
+		if len(it.When.Kinds()) > 0 {
+			add(Error, "push: false 인데 when 에 조건이 있음(조회 전용 항목은 순간에 걸 수 없음)")
+		}
+		if c := it.ConfirmValue(); c == "true" || c == "always" {
+			add(Error, "push: false 인데 confirm 이 %s 임(조회 전용 항목은 확인을 요구할 수 없음)", c)
+		}
+		if it.Check != nil {
+			add(Error, "push: false 인데 check 가 있음(조회 전용 항목은 결과물 검사를 할 수 없음)")
+		}
 	}
 	// 중첩 키는 해석이 끝난 뒤에 훑는다.
 	for i := 0; i+1 < len(m.Content); i += 2 {
