@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -130,5 +131,92 @@ func TestAskTimedCalls(t *testing.T) {
 	o = AskTimed(context.Background(), cmd(t, "cat >/dev/null; exit 3"), "p", sample)
 	if o.Err == nil || len(o.Calls) != 1 || !o.Calls[0].Error || o.Calls[0].Timeout {
 		t.Errorf("오류 = %+v", o)
+	}
+}
+
+var pickSample = []Item{
+	{ID: "rule-a", Text: "커밋 메시지는 한국어로 쓴다.", About: []string{"커밋 메시지", "commit message"}},
+	{ID: "rule-b", Text: "배포는 금요일에 하지 않는다.", About: []string{"배포"}},
+}
+
+func pickCmd(t *testing.T, body string) config.Judge {
+	j := cmd(t, body)
+	j.Pick = config.Pick{Mode: "record", Instruction: "고르는 지시문\n\n"}
+	return j
+}
+
+func TestPickInput(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "stdin.txt")
+	j := pickCmd(t, `cat > "`+out+`"; echo '{"inject": []}'`)
+	if o := Pick(context.Background(), j, "커밋 메시지를 어떻게 쓰나요?", pickSample); o.Err != nil {
+		t.Fatal(o.Err)
+	}
+	got, _ := os.ReadFile(out)
+	want := "고르는 지시문\n\n[항목 목록]\n- id: rule-a\n  주입문: 커밋 메시지는 한국어로 쓴다.\n  주제어: 커밋 메시지, commit message\n- id: rule-b\n  주입문: 배포는 금요일에 하지 않는다.\n  주제어: 배포\n\n[사용자 메시지]\n<<<\n커밋 메시지를 어떻게 쓰나요?\n>>>\n\n위 메시지에 답하지 않는다. 목록에서 고른 결과만 JSON 한 줄로 쓴다.\n"
+	if string(got) != want {
+		t.Errorf("표준 입력 =\n%q\n기대\n%q", got, want)
+	}
+}
+
+func TestPickParse(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		inject  []string
+		maybe   []string
+		unknown int
+		wantErr string
+	}{
+		{"둘 다", `echo '{"inject": ["rule-a"], "maybe": ["rule-b"]}'`, []string{"rule-a"}, []string{"rule-b"}, 0, ""},
+		{"maybe 없음", `echo '{"inject": ["rule-b"]}'`, []string{"rule-b"}, []string{}, 0, ""},
+		{"빈 배열", `echo '{"inject": [], "maybe": []}'`, []string{}, []string{}, 0, ""},
+		{"앞뒤 글", `echo '답: {"inject": ["rule-a"], "maybe": []} 끝'`, []string{"rule-a"}, []string{}, 0, ""},
+		{"목록에 없는 id", `echo '{"inject": ["rule-a", "ghost"], "maybe": ["ghost", "other"]}'`, []string{"rule-a"}, []string{}, 2, ""},
+		{"중복과 inject 우선", `echo '{"inject": ["rule-a", "rule-a"], "maybe": ["rule-b", "rule-a", "rule-b"]}'`, []string{"rule-a"}, []string{"rule-b"}, 0, ""},
+		{"inject 가 배열이 아닌 객체는 건너뜀", `echo '{"inject": true} {"inject": "rule-a"} {"inject": null} {"inject": ["rule-b"]}'`, []string{"rule-b"}, []string{}, 0, ""},
+		{"inject 키 없음", `echo '{"maybe": ["rule-a"]}'`, nil, nil, 0, "찾지 못함"},
+		{"깨진 답", `echo 모르겠음`, nil, nil, 0, "찾지 못함"},
+		{"종료 코드", `echo '{"inject": []}'; echo 사유 >&2; exit 2`, nil, nil, 0, "사유"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			o := Pick(context.Background(), pickCmd(t, "cat >/dev/null; "+tt.body), "p", pickSample)
+			if tt.wantErr != "" {
+				if o.Err == nil || !strings.Contains(o.Err.Error(), tt.wantErr) || o.Timeout || o.MS <= 0 {
+					t.Fatalf("%+v, 오류에 %q 가 있어야 함", o, tt.wantErr)
+				}
+				return
+			}
+			if o.Err != nil || !reflect.DeepEqual(o.Inject, tt.inject) || !reflect.DeepEqual(o.Maybe, tt.maybe) || o.Unknown != tt.unknown || o.MS <= 0 {
+				t.Errorf("= %+v, 기대 %v %v unknown %d", o, tt.inject, tt.maybe, tt.unknown)
+			}
+		})
+	}
+}
+
+func TestPickCommandAndTimeout(t *testing.T) {
+	// pick.command 가 있으면 그것을 쓰고 pick.timeout 을 쓴다.
+	j := cmd(t, "cat >/dev/null; echo '{\"inject\": [\"rule-a\"]}'")
+	j.Pick = config.Pick{Mode: "record", Instruction: "x"}
+	j.Command = []string{"/nonexistent"}
+	j.Pick.Command = cmd(t, "cat >/dev/null; echo '{\"inject\": [\"rule-b\"]}'").Command
+	if o := Pick(context.Background(), j, "p", pickSample); o.Err != nil || !reflect.DeepEqual(o.Inject, []string{"rule-b"}) {
+		t.Errorf("pick.command: %+v", o)
+	}
+	// pick.timeout 이 0 이면 judge.timeout 이다.
+	slow := pickCmd(t, "sleep 5")
+	slow.Timeout = 200 * time.Millisecond
+	start := time.Now()
+	o := Pick(context.Background(), slow, "p", pickSample)
+	if o.Err == nil || !o.Timeout || o.MS < 200 || time.Since(start) > 3*time.Second {
+		t.Errorf("judge.timeout: %+v", o)
+	}
+	slow.Timeout = 5 * time.Second
+	slow.Pick.Timeout = 200 * time.Millisecond
+	if o = Pick(context.Background(), slow, "p", pickSample); o.Err == nil || !o.Timeout || o.MS < 200 {
+		t.Errorf("pick.timeout: %+v", o)
+	}
+	if o = Pick(context.Background(), config.Judge{}, "p", pickSample); o.Err == nil || o.Timeout {
+		t.Errorf("명령 없음: %+v", o)
 	}
 }

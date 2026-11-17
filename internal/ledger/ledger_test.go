@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -67,4 +68,41 @@ func TestLogErrorAndFailure(t *testing.T) {
 		t.Error("오류가 나야 함")
 	}
 	LogError(filepath.Join(file, "sub"), "x", "y", time.Now())
+}
+
+func TestPickRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	pick := &Pick{Listed: 14, ListTokens: 420, MS: 2850, Unknown: 1, Items: []Picked{
+		{ID: "a", Direct: true, Judged: true, Inject: true, MS: 900},
+		{ID: "b", Judged: true, Reused: true},
+		{ID: "c", Direct: true, Judged: true, Error: true},
+		{ID: "d"},
+	}}
+	if err := Append(home, Row{Session: "s", Event: "UserPromptSubmit", Moment: "prompt", Pick: pick}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := Append(home, Row{Session: "s", Event: "UserPromptSubmit", Moment: "prompt", Pick: &Pick{Listed: 3, Error: true, Timeout: true, Items: []Picked{}}}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := Append(home, Row{Session: "s", Event: "UserPromptSubmit", Moment: "prompt"}, now); err != nil {
+		t.Fatal(err)
+	}
+	rows := ReadAll(home)
+	if len(rows) != 3 {
+		t.Fatalf("%d 줄", len(rows))
+	}
+	if !reflect.DeepEqual(rows[0].Pick, pick) {
+		t.Errorf("왕복 = %+v", rows[0].Pick)
+	}
+	if p := rows[1].Pick; p == nil || !p.Error || !p.Timeout || p.Items == nil || len(p.Items) != 0 {
+		t.Errorf("오류 기록 = %+v", p)
+	}
+	if rows[2].Pick != nil {
+		t.Errorf("pick 이 없는 줄에 생김: %+v", rows[2].Pick)
+	}
+	b, _ := os.ReadFile(filepath.Join(home, "ledger", "2026-11.jsonl"))
+	if lines := strings.Split(strings.TrimSpace(string(b)), "\n"); strings.Contains(lines[2], `"pick"`) || !strings.Contains(lines[0], `"list_tokens":420`) {
+		t.Errorf("줄 꼴: %s", b)
+	}
 }

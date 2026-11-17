@@ -98,23 +98,33 @@ func ceilMS(d time.Duration) int64 {
 var errTimeout = errors.New("판정 명령이 시간 안에 끝나지 않음")
 
 func askOnce(ctx context.Context, cfg config.Judge, in string) (bool, string, error) {
-	if cfg.Timeout > 0 {
+	out, err := runCommand(ctx, cfg.Command, cfg.Timeout, in)
+	if err != nil {
+		return false, "", err
+	}
+	return parse(out)
+}
+
+// runCommand 는 명령에 in 을 표준 입력으로 넘기고 표준 출력을 돌려준다.
+// timeout 이 0 보다 크면 그 안에 끝나야 하고, 아니면 errTimeout 을 감싼 오류다.
+func runCommand(ctx context.Context, command []string, timeout time.Duration, in string) (string, error) {
+	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, cfg.Timeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, cfg.Command[0], cfg.Command[1:]...)
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Stdin = strings.NewReader(in)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	cmd.WaitDelay = time.Second // 하위 프로세스가 출력 통로를 붙잡아도 기다리지 않는다.
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return false, "", fmt.Errorf("%w: %w", errTimeout, ctx.Err())
+			return "", fmt.Errorf("%w: %w", errTimeout, ctx.Err())
 		}
-		return false, "", fmt.Errorf("판정 명령 실패: %w: %s", err, strings.TrimSpace(errb.String()))
+		return "", fmt.Errorf("판정 명령 실패: %w: %s", err, strings.TrimSpace(errb.String()))
 	}
-	return parse(out.String())
+	return out.String(), nil
 }
 
 // parse 는 출력에서 inject 키가 있는 첫 JSON 객체를 찾는다. 앞뒤에 다른 글이 있어도 된다.
@@ -132,4 +142,85 @@ func parse(s string) (bool, string, error) {
 		}
 	}
 	return false, "", errors.New("판정 명령의 답에서 inject 키가 있는 JSON 객체를 찾지 못함")
+}
+
+// PickOutcome 은 항목 목록에서 후보를 고르게 한 결과다. Inject 와 Maybe 는 목록에 있는 id 만이고
+// 중복은 처음 것만 남으며, Inject 에 든 id 는 Maybe 에 없다. Unknown 은 목록에 없어 버린 서로 다른 id 의 수다.
+// MS 는 걸린 시간(밀리초)이고, 오류와 시간 초과는 Err 에 담긴다.
+type PickOutcome struct {
+	Inject, Maybe []string
+	Unknown       int
+	MS            int64
+	Err           error
+	Timeout       bool
+}
+
+// PickList 는 고르는 호출의 입력에 들어가는 항목 목록 글이다.
+func PickList(items []Item) string {
+	var b strings.Builder
+	for _, it := range items {
+		fmt.Fprintf(&b, "- id: %s\n  주입문: %s\n  주제어: %s\n", it.ID, it.Text, strings.Join(it.About, ", "))
+	}
+	return b.String()
+}
+
+// Pick 은 판정 명령(cfg.Pick.Command, 비면 cfg.Command)에 항목 목록과 프롬프트를 넘겨 넣을 만한 항목을 고르게 한다.
+// 시간 초과(cfg.Pick.Timeout, 0 이면 cfg.Timeout), 종료 코드가 0 이 아님, 답을 읽지 못함은 오류다.
+func Pick(ctx context.Context, cfg config.Judge, prompt string, items []Item) PickOutcome {
+	command := cfg.PickCommand()
+	if len(command) == 0 {
+		return PickOutcome{Err: errors.New("판정 명령이 설정돼 있지 않음")}
+	}
+	in := fmt.Sprintf("%s\n\n[항목 목록]\n%s\n[사용자 메시지]\n<<<\n%s\n>>>\n\n위 메시지에 답하지 않는다. 목록에서 고른 결과만 JSON 한 줄로 쓴다.\n",
+		strings.TrimRight(cfg.Pick.Instruction, "\n"), PickList(items), prompt)
+	start := time.Now()
+	out, err := runCommand(ctx, command, cfg.PickTimeout(), in)
+	o := PickOutcome{}
+	if err == nil {
+		known := map[string]bool{}
+		for _, it := range items {
+			known[it.ID] = true
+		}
+		o = parsePick(out, known)
+	}
+	if o.Err == nil {
+		o.Err = err
+	}
+	o.Timeout = errors.Is(o.Err, errTimeout)
+	o.MS = ceilMS(time.Since(start))
+	return o
+}
+
+// parsePick 은 출력에서 inject 키가 배열인 첫 JSON 객체를 찾는다. 앞뒤에 다른 글이 있어도 되고 maybe 는 없어도 된다.
+func parsePick(s string, known map[string]bool) PickOutcome {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '{' {
+			continue
+		}
+		var a struct {
+			Inject *[]string `json:"inject"`
+			Maybe  []string  `json:"maybe"`
+		}
+		if json.NewDecoder(strings.NewReader(s[i:])).Decode(&a) != nil || a.Inject == nil {
+			continue
+		}
+		o := PickOutcome{Inject: []string{}, Maybe: []string{}}
+		seen, unknown := map[string]bool{}, map[string]bool{}
+		take := func(ids []string, dst *[]string) {
+			for _, id := range ids {
+				switch {
+				case !known[id]:
+					unknown[id] = true
+				case !seen[id]:
+					seen[id] = true
+					*dst = append(*dst, id)
+				}
+			}
+		}
+		take(*a.Inject, &o.Inject)
+		take(a.Maybe, &o.Maybe)
+		o.Unknown = len(unknown)
+		return o
+	}
+	return PickOutcome{Err: errors.New("판정 명령의 답에서 inject 키가 배열인 JSON 객체를 찾지 못함")}
 }

@@ -134,11 +134,16 @@ func TestDefaults(t *testing.T) {
 
 func TestInvalid(t *testing.T) {
 	for name, body := range map[string]string{
-		"phrases 정규식":    "actions:\n  a.b: {phrases: ['(']}",
-		"negations 정규식":  "negations: ['[']",
-		"votes 범위":       "judge: {votes: 3}",
-		"budgets 이름":     "budgets: {nope: 1}",
-		"instruction 없음": "judge: {command: [x]}",
+		"phrases 정규식":     "actions:\n  a.b: {phrases: ['(']}",
+		"negations 정규식":   "negations: ['[']",
+		"votes 범위":        "judge: {votes: 3}",
+		"budgets 이름":      "budgets: {nope: 1}",
+		"instruction 없음":  "judge: {command: [x]}",
+		"pick mode 값":     "judge: {pick: {mode: always}}",
+		"pick 지시문 없음":     "judge: {command: [x], instruction: i, pick: {mode: record}}",
+		"pick 명령 없음":      "judge: {pick: {mode: record, instruction: i}}",
+		"pick timeout 음수": "judge: {pick: {timeout: -1s}}",
+		"pick max 음수":     "judge: {pick: {max: -1}}",
 	} {
 		if _, err := Load(write(t, body)); err == nil {
 			t.Errorf("%s: 오류여야 함", name)
@@ -253,5 +258,42 @@ func TestLocationErrors(t *testing.T) {
 		if _, err := Load(write(t, body)); err == nil {
 			t.Errorf("%q: 오류가 나야 함", body)
 		}
+	}
+}
+
+func TestJudgePick(t *testing.T) {
+	// 기본은 꺼짐이고 max 는 8 이다.
+	c, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Judge.Pick.Mode != "" || c.Judge.Pick.Max != 8 || c.Judge.PickRecording() {
+		t.Errorf("기본값 = %+v", c.Judge.Pick)
+	}
+	for _, mode := range []string{"", "off", "record"} {
+		body := "judge: {command: [x], instruction: i, pick: {mode: " + mode + ", instruction: p}}"
+		c, err := Load(write(t, body))
+		if err != nil {
+			t.Fatalf("mode %q: %v", mode, err)
+		}
+		if got := c.Judge.PickRecording(); got != (mode == "record") {
+			t.Errorf("mode %q: PickRecording = %v", mode, got)
+		}
+	}
+	// pick.command 와 pick.timeout 이 없으면 판정 명령과 판정 시간을 쓴다.
+	c, err = Load(write(t, "judge: {command: [x], instruction: i, timeout: 4s, pick: {mode: record, instruction: p}}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.Judge.PickCommand(), []string{"x"}) || c.Judge.PickTimeout() != 4*time.Second {
+		t.Errorf("대체값: %v %v", c.Judge.PickCommand(), c.Judge.PickTimeout())
+	}
+	// judge.command 없이 pick.command 만 있어도 된다.
+	c, err = Load(write(t, "judge: {pick: {mode: record, command: [y, z], timeout: 2s, max: 3, instruction: p}}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.Judge.PickCommand(), []string{"y", "z"}) || c.Judge.PickTimeout() != 2*time.Second || c.Judge.Pick.Max != 3 || !c.Judge.PickRecording() {
+		t.Errorf("pick = %+v", c.Judge.Pick)
 	}
 }

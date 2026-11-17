@@ -79,6 +79,9 @@ func whyLine(r ledger.Row) string {
 		}
 		line += " | 판정: " + strings.Join(js, "; ")
 	}
+	if p := r.Pick; p != nil {
+		line += " | " + pickLine(p)
+	}
 	if len(r.Checks) > 0 {
 		var cs []string
 		for _, c := range r.Checks {
@@ -103,6 +106,34 @@ func whyLine(r ledger.Row) string {
 		line += " (그림자)"
 	}
 	return line
+}
+
+// pickLine 은 모델이 목록에서 고른 기록을 한 마디로 적는다.
+func pickLine(p *ledger.Pick) string {
+	if p.Error {
+		return "모델 후보: 오류"
+	}
+	var xs []string
+	for _, it := range p.Items {
+		kind := "후보"
+		if it.Direct {
+			kind = "바로"
+		}
+		ans := "판정 안 함"
+		switch {
+		case it.Judged && it.Error:
+			ans = "판정 오류"
+		case it.Judged && it.Inject:
+			ans = "판정 넣음"
+		case it.Judged:
+			ans = "판정 넣지 않음"
+		}
+		xs = append(xs, fmt.Sprintf("%s %s·%s", it.ID, kind, ans))
+	}
+	if len(xs) == 0 {
+		return fmt.Sprintf("모델 후보(%d건 중, %dms): 고른 항목 없음", p.Listed, p.MS)
+	}
+	return fmt.Sprintf("모델 후보(%d건 중, %dms): %s", p.Listed, p.MS, strings.Join(xs, ", "))
 }
 
 // judgeWord 는 판정 기록 하나의 결과를 한 마디로 적는다.

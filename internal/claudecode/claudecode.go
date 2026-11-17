@@ -281,6 +281,13 @@ func (h *handler) record(res selector.Result) {
 	for _, j := range res.Judges {
 		h.row.Judges = append(h.row.Judges, ledger.Judged{ID: j.ID, Inject: j.Inject, MS: j.MS, Error: j.Error, Timeout: j.Timeout})
 	}
+	if p := res.Pick; p != nil {
+		lp := &ledger.Pick{Listed: p.Listed, ListTokens: p.ListTokens, MS: p.MS, Error: p.Error, Timeout: p.Timeout, Unknown: p.Unknown, Items: []ledger.Picked{}}
+		for _, it := range p.Items {
+			lp.Items = append(lp.Items, ledger.Picked{ID: it.ID, Direct: it.Direct, Judged: it.Judged, Inject: it.Inject, Reused: it.Reused, MS: it.MS, Error: it.Error})
+		}
+		h.row.Pick = lp
+	}
 }
 
 // contextOut 은 넣을 항목을 "[heka]" 로 시작하는 글로 만든다. 항목이 없으면 nil 이다.

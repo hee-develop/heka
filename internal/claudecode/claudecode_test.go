@@ -863,3 +863,29 @@ func TestAgentKind(t *testing.T) {
 		}
 	}
 }
+
+func TestLedgerPick(t *testing.T) {
+	e := newEnv(t)
+	pick := filepath.Join(t.TempDir(), "pick.sh")
+	if err := os.WriteFile(pick, []byte("#!/bin/sh\ncat >/dev/null\necho '{\"inject\": [\"topic-deploy\"], \"maybe\": [\"없는-항목\"]}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := strings.ReplaceAll(cfgTmpl, "JUDGE", "/bin/true")
+	cfg = strings.ReplaceAll(cfg, "judge: {command: [/bin/true], instruction: 지시문, timeout: 5s}",
+		"judge:\n  command: [/bin/true]\n  instruction: 지시문\n  timeout: 5s\n  pick:\n    mode: record\n    command: ["+pick+"]\n    instruction: 고른다\n")
+	e.writeConfig(cfg)
+	e.prompt("pk", "배포 점검")
+	var got map[string]any
+	for _, r := range e.ledgerRows() {
+		if p, ok := r["pick"].(map[string]any); ok {
+			got = p
+		}
+	}
+	if got == nil || got["listed"].(float64) < 1 || got["list_tokens"].(float64) < 1 || got["ms"].(float64) <= 0 || got["unknown"] != float64(1) {
+		t.Fatalf("pick = %v", got)
+	}
+	items, _ := got["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["id"] != "topic-deploy" || items[0].(map[string]any)["direct"] != true || items[0].(map[string]any)["judged"] != true {
+		t.Errorf("items = %v", items)
+	}
+}
