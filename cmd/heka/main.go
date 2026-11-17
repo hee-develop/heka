@@ -20,7 +20,7 @@ const usage = `사용법: heka <명령>
   add       항목을 등록한다 (비슷한 항목이 있으면 대기함)
   pending   대기함을 보고 결정한다 (fix|replace|keep|drop)
   why       원장의 최근 주입을 사람이 읽는 꼴로 보인다 (--session, --last, --id, --json)
-  list      항목 목록 (--json, --agent, --must, --flagged, --violated)
+  list      항목 목록 (--json, --agent, --must, --flagged, --find-only, --violated)
   stats     항목 하나의 주입·탈락·검사에 걸림·flag 횟수 (--json)
   judge-stats  원장의 판정 시간 분포와 상한별로 잘릴 판정 수 (--json, --since YYYY-MM-DD)
   replay    기록해 둔 순간들을 선별기에 다시 넣어 전달·정밀도·침묵을 잰다 (--runs, --no-judge, --parallel, --json, --out, --min-*)

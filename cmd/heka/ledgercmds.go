@@ -204,6 +204,7 @@ type listEntry struct {
 	Checked string    `json:"checked"`
 	Expires string    `json:"expires"`
 	Flagged bool      `json:"flagged"`
+	Push    *bool     `json:"push,omitempty"` // 조회 전용이면 false. 그 밖에는 빠진다.
 	// Violations 는 검사에 걸린 횟수와 flag 횟수의 합이다.
 	Violations int `json:"violations"`
 }
@@ -231,6 +232,9 @@ func listText(e listEntry) string {
 	flag := ""
 	if e.Flagged {
 		flag = "  표시됨"
+	}
+	if e.Push != nil && !*e.Push {
+		flag += "  조회 전용"
 	}
 	return fmt.Sprintf("%s  %s  조건: %s  범위: %s  확인: %s  기한: %s%s",
 		e.ID, must, whenText(e.When), dash(strings.Join(e.Scope, ",")), dash(e.Checked), dash(e.Expires), flag)
@@ -270,7 +274,7 @@ func checkFailCounts(rows []ledger.Row) map[string]int {
 // runList 는 `heka list` 를 실행한다. 항목 파일을 훑어 목록으로 보인다.
 func runList(args []string, stdout, stderr io.Writer) int {
 	var agent string
-	var must, flagged, asJSON bool
+	var must, flagged, findOnly, asJSON bool
 	var violated int
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -278,13 +282,14 @@ func runList(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&agent, "agent", "", "when.agent 에 이 종류가 걸린 항목만")
 	fs.BoolVar(&must, "must", false, "필수 항목만")
 	fs.BoolVar(&flagged, "flagged", false, "원장에 flag 가 남은 항목만")
+	fs.BoolVar(&findOnly, "find-only", false, "조회 전용(push: false) 항목만")
 	fs.IntVar(&violated, "violated", 0, "검사에 걸린 횟수와 flag 횟수의 합이 N 이상인 항목만")
 	pos, err := parseMixed(fs, args)
 	if err != nil {
 		return 2
 	}
 	if len(pos) > 0 || violated < 0 {
-		fmt.Fprintln(stderr, "heka list: 사용법: heka list [--json] [--agent <종류>] [--must] [--flagged] [--violated N]")
+		fmt.Fprintln(stderr, "heka list: 사용법: heka list [--json] [--agent <종류>] [--must] [--flagged] [--find-only] [--violated N]")
 		return 2
 	}
 	home, err := config.Home()
@@ -312,7 +317,11 @@ func runList(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		e := listEntry{ID: it.ID, Must: it.Must, When: it.When, Scope: it.Scope, Checked: string(it.Checked), Expires: string(it.Expires), Flagged: flags[it.ID] > 0, Violations: fails[it.ID] + flags[it.ID]}
-		if (must && !e.Must) || (flagged && !e.Flagged) || (violated > 0 && e.Violations < violated) || (agent != "" && !contains(it.When.Agent, agent)) {
+		if !it.Pushes() {
+			off := false
+			e.Push = &off
+		}
+		if (must && !e.Must) || (flagged && !e.Flagged) || (findOnly && e.Push == nil) || (violated > 0 && e.Violations < violated) || (agent != "" && !contains(it.When.Agent, agent)) {
 			continue
 		}
 		out = append(out, e)

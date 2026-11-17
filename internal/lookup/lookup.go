@@ -38,6 +38,7 @@ type Hit struct {
 	Why         string              `json:"why"`
 	Score       float64             `json:"score"`
 	BodyOmitted bool                `json:"body_omitted,omitempty"`
+	Push        *bool               `json:"push,omitempty"` // 조회 전용이면 false. 그 밖에는 빠진다.
 }
 
 // Result 는 조회 결과다. OmittedIDs 는 예산에 걸려 빠진 항목이다.
@@ -99,8 +100,13 @@ func Find(ix *index.Index, cfg *config.Config, q Query) (Result, error) {
 				why += fmt.Sprintf(", 낱말 점수 %.2f", score[id])
 			}
 		}
-		hits = append(hits, Hit{ID: id, Text: strings.TrimSpace(r.Text), Body: strings.TrimSpace(r.Body), Must: r.Must,
-			When: r.When, Why: why, Score: score[id]})
+		h := Hit{ID: id, Text: strings.TrimSpace(r.Text), Body: strings.TrimSpace(r.Body), Must: r.Must,
+			When: r.When, Why: why, Score: score[id]}
+		if !r.Push {
+			off := false
+			h.Push = &off
+		}
+		hits = append(hits, h)
 		return nil
 	}
 	done := map[string]bool{}
@@ -177,6 +183,9 @@ func (r Result) Text() string {
 			if v := h.When[k]; len(v) > 0 {
 				meta = append(meta, "when."+k+"="+strings.Join(v, "|"))
 			}
+		}
+		if h.Push != nil && !*h.Push {
+			meta = append(meta, "push=false")
 		}
 		b.WriteString("  (" + strings.Join(meta, " · ") + ")\n")
 		if h.BodyOmitted {

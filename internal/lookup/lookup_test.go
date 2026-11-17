@@ -203,3 +203,37 @@ func TestDefaultLimitIsFive(t *testing.T) {
 		}
 	}
 }
+
+func TestFindReachesFindOnlyItems(t *testing.T) {
+	ix, cfg, home := setup(t)
+	put(t, home, "fo-note", "text: 옛 노트의 요약 한 줄.\nsource: doc\nabout: [옛 노트]\nscope: [personal]\npush: false\n", "본문")
+	if err := index.Ensure(home, cfg); err != nil {
+		t.Fatal(err)
+	}
+	ix.Close()
+	ix, err := index.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ix.Close()
+	r, err := Find(ix, cfg, Query{Text: "옛 노트", Today: "2026-11-16", Budget: 5000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Items) != 1 || r.Items[0].ID != "fo-note" || r.Items[0].Push == nil || *r.Items[0].Push {
+		t.Fatalf("조회 전용 항목을 찾지 못함: %+v", r.Items)
+	}
+	if !strings.Contains(r.Text(), "push=false") {
+		t.Errorf("글 출력에 push=false 가 없음: %s", r.Text())
+	}
+	b, _ := json.Marshal(r)
+	if !strings.Contains(string(b), `"push":false`) {
+		t.Errorf("JSON 에 push 가 없음: %s", b)
+	}
+	// push 가 true 인 항목의 출력은 그대로다.
+	r, _ = Find(ix, cfg, Query{Text: "푸시 규칙", Today: "2026-11-16", Budget: 5000})
+	b, _ = json.Marshal(r)
+	if strings.Contains(string(b), `"push":`) || strings.Contains(r.Text(), "push=") {
+		t.Errorf("true 인 항목에 push 표시가 있음: %s", b)
+	}
+}

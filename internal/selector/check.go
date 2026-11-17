@@ -64,6 +64,9 @@ func StopChecks(ix *index.Index, cfg *config.Config, m Moment) ([]Checkable, err
 		if err != nil {
 			return nil, err
 		}
+		if !r.Push {
+			continue // 방어: 조회 전용 항목에는 check 가 있을 수 없다.
+		}
 		c, ok := parseCheck(r.CheckJSON)
 		if !ok || c.Target != "last_message" {
 			continue

@@ -297,10 +297,10 @@ func (s *sel) topic() error {
 
 // topicScript 는 주제 갈래의 지금 방식(스크립트 후보 + 한 건씩 판정)이다. 판정한 항목의 답을 id 별로 돌려준다.
 func (s *sel) topicScript(text string) (map[string]judge.Outcome, error) {
-	// 대상은 동작 조건이 없고, moment 조건이 있으면 prompt(또는 이 순간)를 포함하는 항목이다.
+	// 대상은 조회 전용이 아니고(push), 동작 조건이 없고, moment 조건이 있으면 prompt(또는 이 순간)를 포함하는 항목이다.
 	// 대상이 아닌 항목은 후보가 아니므로 탈락으로도 남기지 않는다.
 	target := func(r *index.Record) bool {
-		return len(r.When["action"]) == 0 && momentOK(r, true, "prompt", s.m.Kind)
+		return r.Push && len(r.When["action"]) == 0 && momentOK(r, true, "prompt", s.m.Kind)
 	}
 	match := func(r *index.Record) string { return s.matchWhen(r, true, "prompt", s.m.Kind) }
 	var cands []*cand
@@ -422,7 +422,7 @@ func (s *sel) runPick() *pickRun {
 			pr.out.Err = err
 			return pr
 		}
-		if len(r.When["action"]) > 0 || !momentOK(r, true, "prompt", s.m.Kind) {
+		if !r.Push || len(r.When["action"]) > 0 || !momentOK(r, true, "prompt", s.m.Kind) {
 			continue
 		}
 		if stage, _, _ := s.check(r, match); stage != "" {
@@ -518,6 +518,9 @@ func (s *sel) admit(id string, match func(*index.Record) string) (*cand, error) 
 }
 
 func (s *sel) admitRec(r *index.Record, match func(*index.Record) string) *cand {
+	if !r.Push {
+		return nil // 조회 전용 항목은 후보가 아니다. 탈락으로도 남기지 않는다.
+	}
 	if s.got[r.ID] {
 		return nil
 	}
