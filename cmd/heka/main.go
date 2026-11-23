@@ -23,6 +23,7 @@ const usage = `사용법: heka <명령>
   list      항목 목록 (--json, --agent, --must, --flagged, --find-only, --violated)
   stats     항목 하나의 주입·탈락·검사에 걸림·flag 횟수 (--json)
   judge-stats  원장의 판정 시간 분포와 상한별로 잘릴 판정 수 (--json, --since YYYY-MM-DD)
+  gui       원장과 항목을 보는 읽기 전용 화면을 로컬 서버로 연다 (--port, --open)
   replay    기록해 둔 순간들을 선별기에 다시 넣어 전달·정밀도·침묵을 잰다 (--runs, --no-judge, --parallel, --json, --out, --min-*)
   retire    항목을 지우고 색인과 원장을 갱신한다 (--reason 필수)
   mcp       MCP 서버를 표준 입출력으로 실행한다
@@ -65,6 +66,8 @@ func runIn(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runStats(args[1:], stdout, stderr)
 	case "judge-stats":
 		return runJudgeStats(args[1:], stdout, stderr)
+	case "gui":
+		return runGUI(args[1:], stdout, stderr)
 	case "replay":
 		return runReplay(args[1:], stdout, stderr)
 	case "retire":
