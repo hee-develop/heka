@@ -3,39 +3,109 @@
    데이터가 섞인 글은 모두 textContent 로만 넣는다(innerHTML 을 쓰지 않는다). */
 
 // ---------- 구조 정의: 코드가 바뀌면 이 상수만 고친다 ----------
-// 단계(stage): k=그리는 방식, t=이름, d=설명, drops=원장 탈락 단계 이름들.
-// cols: 가로로 이어지는 열이고, 열 안의 단계는 세로로 쌓인 갈래다(한 칸짜리 열은 모든 갈래에 공통이다).
-const S = (k, t, d, drops) => ({ k, t, d: d || '', drops: drops || [] });
-const SCOPE = S('plain', '범위·자격', '위치 범위, 기한·확인 여부', ['범위', '자격']);
-const DEDUP = S('plain', '중복 제거', '세션에 한 번만', ['중복']);
+// 순서도의 갈래(순간)마다 노드(칸 col, 갈래 안 높이 y)와 간선을 적는다. 세션 카드의 작은 띠도 같은 노드(t, drops, k)에서 나온다.
+//  P=처리(네모) D=판단(마름모) O=끝 기호(알약, 나가는 것) E=끝 표시(탈락·건너뜀) X=기록만 하는 점선 네모
+//  exit: 판단의 아래쪽 출구 {label, lines(m), n(m)}, pass: 오른쪽 출구의 이름, note(m): 노드 아래 작은 숫자,
+//  bus: 원장으로 모이는 선에 잇는가, t/drops/k: 카드 띠의 이름, 탈락 단계, 판정(judge)·확인(confirm)·검사(check)·사전(dict)
+const n0 = v => (Number.isFinite(v) ? v : 0).toLocaleString('ko-KR');
+const dr = (m, keys) => keys.reduce((a, k) => a + ((m.dropped || {})[k] || 0), 0);
+const ms = v => `${n0(v)}ms`;
+const P = (id, col, y, lines, o) => ({ kind: 'P', id, col, y, lines, ...o });
+const D = (id, col, y, lines, o) => ({ kind: 'D', id, col, y, lines, ...o });
+const O = (id, col, y, lines, o) => ({ kind: 'O', id, col, y, lines, bus: true, ...o });
+const dropExit = (label, keys, extra) => ({ label, n: m => dr(m, keys), lines: m => [`탈락 ${n0(dr(m, keys))}건`, ...(extra ? [extra(m)] : [])] });
+const SC = (id, col, y, note) => D(id, col, y, ['범위·자격', '통과?'], { t: '범위·자격', drops: ['범위', '자격'], pass: '예', note,
+  d: '작업 위치로 정한 범위에 속하고, 기한이 지나지 않았고, 출처·확인 여부가 맞는가',
+  exit: dropExit('아니오', ['범위', '자격'], m => `범위 ${n0(dr(m, ['범위']))}·자격 ${n0(dr(m, ['자격']))}`) });
+const DEDUP = (id, col, y, note) => D(id, col, y, ['처음', '넣나?'], { t: '중복 제거', drops: ['중복'], pass: '예', note,
+  d: '같은 항목은 세션에 한 번만 넣는다(서브에이전트는 따로 센다)', exit: dropExit('아니오', ['중복']) });
+const JUDGE = (id, col, y) => D(id, col, y, ['직접', '답 되나?'], { t: '모델 판정', k: 'judge', drops: ['판정'], pass: '예',
+  d: '작은 언어 모델이 "이 항목이 프롬프트가 묻거나 시키는 것에 직접 답하는가"를 한 건씩 판정한다',
+  exit: dropExit('아니오', ['판정']),
+  note: m => [`판정 ${n0(m.judges.n)}번·넣으라 ${n0(m.judges.inject)}번`, `시간 초과 ${n0(m.judges.timeout)}·오류 ${n0(m.judges.error)}`,
+    `중앙 ${ms(m.judges.ms.median)}`, `95% ${ms(m.judges.ms.p95)}`] });
+const PICK = (id, col, y) => ({ kind: 'X', id, col, y, w: 236, h: 44, show: m => m.pick.n > 0, bus: true,
+  lines: m => ['모델 후보 (기록만 함, 주입에 안 쓰임)', `${n0(m.pick.n)}번 · 고른 ${n0(m.pick.picked)}건 중 판정 통과 ${n0(m.pick.picked_inject)}건`],
+  d: '모델이 항목 목록에서 후보를 고른 기록. 원장에만 남고 무엇을 넣을지에는 쓰이지 않는다' });
+const outLines = m => ['주입', `${n0(m.injected)}건`, `토큰 약 ${n0(m.tokens)}`];
+const silent = m => `침묵 ${n0(m.rows_silent)}번`;
+
 const LANES = [
-  { id: 'session_start', short: '세션 시작', title: '세션 시작·압축 직후', event: 'SessionStart',
-    inDesc: '새 세션이 열리거나 압축·clear 뒤 이어질 때',
-    cols: [[S('plain', '범위', '작업 위치로 정한 범위', ['범위'])], [S('plain', '자격', '기한·확인 여부', ['자격'])],
-      [S('plain', '시작 항목 고르기', 'when.moment 가 세션 시작', ['일치'])], [DEDUP]] },
-  { id: 'prompt', short: '프롬프트', title: '사용자 프롬프트', event: 'UserPromptSubmit',
-    inDesc: '사용자가 프롬프트를 보냈을 때', pre: 'tool_made',
-    cols: [[S('dict', '동작 낱말 사전', '"푸시해 줘" → git.push'), S('plain', '조각내기', '어절·두 글자 조각')],
-      [SCOPE],
-      [S('plain', '조건표', '시킨 동작에 걸린 필수 항목'), S('plain', '후보 잡기', '주제어·낱말 겹침 (조건표 탈락 포함)', ['일치'])],
-      [null, S('judge', '모델 판정', '직접 답이 되는가', ['판정'])],
-      [DEDUP]],
-    pickLane: true },
-  { id: 'tool', short: '도구 호출', title: '도구 호출 직전', event: 'PreToolUse',
-    inDesc: '도구(Bash, Edit 등)를 쓰기 직전',
-    cols: [[S('plain', '동작 해석', '도구 호출 → 동작 이름 (위임 도구면 위임 글을 적어 둠)')], [SCOPE],
-      [S('plain', '조건표 일치', '동작·경로·저장소', ['일치'])], [DEDUP], [S('check', '확인·검사', '확인 요구, 결과물 검사')]] },
-  { id: 'subagent_start', short: '서브에이전트', title: '서브에이전트 시작', event: 'SubagentStart',
-    inDesc: '서브에이전트가 시작될 때',
-    cols: [[S('plain', '위임 글 꺼내기', '세션 상태에서 같은 종류의 글')], [SCOPE],
-      [S('plain', '시작 항목', 'when.moment·when.agent', ['일치']), S('plain', '후보 잡기', '위임 글로 주제어·낱말')],
-      [null, S('judge', '모델 판정', '직접 답이 되는가', ['판정'])], [DEDUP]],
-    pickLane: true },
-  { id: 'stop', short: '턴 종료', title: '턴 종료', event: 'Stop',
-    inDesc: 'AI 가 응답을 끝냈을 때',
-    cols: [[SCOPE], [S('check', '마지막 응답 검사', '형식에 맞는가')]] },
+  { id: 'session_start', short: '세션 시작', title: '세션 시작·압축 직후', event: 'SessionStart', h: 200,
+    nodes: [
+      P('a', 2, 66, ['작업 위치로', '범위 정하기'], { t: '범위 정하기', d: '세션을 연 작업 위치에서 항목의 범위를 정한다. 알 수 없으면 전역 항목만 본다' }),
+      SC('b', 3, 66),
+      D('c', 4, 66, ['시작 항목', '일치?'], { t: '시작 항목 일치', drops: ['일치'], pass: '예', exit: dropExit('아니오', ['일치']),
+        d: 'when.moment 에 세션 시작이 적힌 항목인가. 동작 조건이 걸린 필수 항목은 여기서 넣지 않는다' }),
+      DEDUP('d', 5, 66, m => ['압축·clear 뒤에는', '다시 넣음']),
+      O('out', 8, 66, outLines, { note: m => [silent(m)], d: '시작 항목의 주입문을 넣는다' }),
+    ],
+    edges: [['a', 'b'], ['b', 'c'], ['c', 'd'], ['d', 'out']] },
+  { id: 'prompt', short: '프롬프트', title: '사용자 프롬프트', event: 'UserPromptSubmit', h: 432,
+    nodes: [
+      D('tm', 2, 141, ['사용자가 쓴', '프롬프트?'], { chip: false, pass: '예', d: '도구가 만들어 넣은 프롬프트(하위 에이전트 완료 알림 등)는 두 갈래를 모두 건너뛴다',
+        exit: { label: '아니오', n: m => m.tool_made, lines: m => [`건너뜀 ${n0(m.tool_made)}번`], skip: true } }),
+      SC('sc', 3, 141, m => ['(두 갈래 공통,', '레인 합계)']),
+      P('a1', 4, 66, ['동작 낱말', '사전으로', '시킨 동작'], { t: '동작 낱말 사전', k: 'dict', d: '"푸시해 줘" → git.push 처럼 시킨 동작을 알아채고, 부정·질문·조건이 섞이면 거절로 센다',
+        note: m => [`시킨 동작 ${n0(m.asked)}건`, `거절 ${n0(m.refused)}건`] }),
+      D('a2', 5, 66, ['걸린 필수', '항목?'], { t: '조건표(필수 항목)', pass: '예', d: '시킨 동작에 조건이 걸린 필수 항목을 조건표에서 찾는다. 찾으면 미리 넣고 허용을 기록한다',
+        exit: { label: '아니오', lines: () => ['해당 없음'], skip: true } }),
+      P('b1', 4, 216, ['조각내기·', '후보 잡기'], { t: '조각내기·후보 잡기', d: '어절과 두 글자 조각으로 나눠 주제어와 낱말 겹침 점수로 후보를 잡는다' }),
+      D('b2', 5, 216, ['후보', '있나?'], { t: '일치', drops: ['일치'], pass: '예', d: '주제어가 프롬프트에 들었거나 낱말 겹침 점수가 높은 항목이 있는가',
+        exit: dropExit('아니오', ['일치'], () => '(두 갈래 합계)') }),
+      JUDGE('b3', 6, 216),
+      DEDUP('dd', 7, 141),
+      O('out', 8, 141, outLines, { note: m => ['필수 주입·허용 기록', '참고 주입 또는 침묵', silent(m)], d: '필수 항목과 참고 항목(최대 3건)의 주입문을 넣는다' }),
+      PICK('pk', 4, 400),
+    ],
+    edges: [['tm', 'sc'], ['sc', 'a1'], ['sc', 'b1'], ['a1', 'a2'], ['b1', 'b2'], ['b2', 'b3'], ['a2', 'dd'], ['b3', 'dd'], ['dd', 'out'],
+      ['b1', 'pk', { down: true, dot: true, label: '기록만' }]] },
+  { id: 'tool', short: '도구 호출', title: '도구 호출 직전', event: 'PreToolUse', h: 218,
+    nodes: [
+      P('a', 2, 66, ['도구 호출을', '동작 이름으로', '해석'], { t: '동작 해석', d: '도구 호출을 동작 이름으로 바꾼다. 위임 도구(Agent·Task)면 위임 글을 세션 상태에 적어 둔다',
+        note: m => ['위임 도구면', '위임 글 저장'] }),
+      SC('b', 3, 66),
+      D('c', 4, 66, ['조건 일치', '항목?'], { t: '조건표 일치', drops: ['일치'], pass: '예', d: '그 동작·경로·저장소에 조건이 맞는 항목이 조건표에 있는가',
+        exit: dropExit('아니오', ['일치']) }),
+      DEDUP('d', 5, 66, m => ['확인·검사 붙은', '항목은 다시 판정']),
+      D('e', 6, 66, ['확인 불필요', '또는 허용?'], { t: '확인', k: 'confirm', pass: '예', d: '확인을 요구하는 항목이고 사용자가 그 동작을 시킨 허용이 없으면 사용자에게 확인을 요구한다',
+        exit: { label: '아니오', n: m => m.confirm, lines: m => ['확인 요구', `${n0(m.confirm)}건`] },
+        note: m => [`허용 사용 ${n0(m.grants_used)}번`] }),
+      D('f', 7, 66, ['검사에', '맞나?'], { t: '검사', k: 'check', pass: '예', d: '결과물(명령·커밋 메시지·PR 본문)이 형식에 맞는가. 안 맞으면 막고 사유를 모델에게 돌려준다',
+        exit: { label: '아니오', n: m => m.checks.blocked, lines: m => ['막고 사유', `돌려줌 ${n0(m.checks.blocked)}번`] },
+        note: m => [`검사 통과 ${n0(m.checks.pass)}`, `걸림 ${n0(m.checks.fail)}·건너뜀 ${n0(m.checks.skip)}`] }),
+      O('out', 8, 66, outLines, { note: m => ['주입문을 넣고', '진행', silent(m)], d: '조건이 맞는 항목의 주입문을 넣고 도구 호출을 진행시킨다' }),
+    ],
+    edges: [['a', 'b'], ['b', 'c'], ['c', 'd'], ['d', 'e'], ['e', 'f'], ['f', 'out']] },
+  { id: 'subagent_start', short: '서브에이전트', title: '서브에이전트 시작', event: 'SubagentStart', h: 432,
+    nodes: [
+      P('a', 2, 141, ['세션 상태에서', '위임 글', '꺼내기'], { t: '위임 글 꺼내기', d: '위임 호출 직전에 적어 둔 같은 종류의 가장 오래된 글을 꺼낸다. 없으면 시작 항목만 고르고 참고 항목은 넣지 않는다' }),
+      SC('b', 3, 141, m => ['(두 갈래 공통,', '레인 합계)']),
+      D('c', 4, 66, ['시작 항목', '일치?'], { t: '시작 항목 일치', drops: ['일치'], pass: '예', exit: dropExit('아니오', ['일치']),
+        d: 'when.moment 가 서브에이전트 시작이거나 when.agent 가 그 종류인 항목인가' }),
+      P('d', 4, 216, ['후보 잡기', '(위임 글)'], { t: '후보 잡기', d: '위임 글로 주제어·낱말 겹침 점수를 매겨 후보를 잡는다(프롬프트와 같은 방식)' }),
+      JUDGE('e', 5, 216),
+      DEDUP('f', 6, 141),
+      O('out', 8, 141, outLines, { note: m => [silent(m)], d: '시작 항목과 판정을 통과한 참고 항목의 주입문을 넣는다' }),
+      PICK('pk', 4, 400),
+    ],
+    edges: [['a', 'b'], ['b', 'c'], ['b', 'd'], ['d', 'e'], ['c', 'f'], ['e', 'f'], ['f', 'out'],
+      ['d', 'pk', { down: true, dot: true, label: '기록만' }]] },
+  { id: 'stop', short: '턴 종료', title: '턴 종료', event: 'Stop', h: 276,
+    nodes: [
+      SC('a', 2, 66),
+      D('b', 3, 66, ['형식에', '맞나?'], { t: '마지막 응답 검사', k: 'check', pass: '예', d: '마지막 응답이 검사의 형식에 맞는가(항목의 when 은 repo·agent 만 본다)',
+        exit: { label: '아니오', lines: () => [], none: true }, noteRight: m => [`검사 통과 ${n0(m.checks.pass)}`, `걸림 ${n0(m.checks.fail)}·건너뜀 ${n0(m.checks.skip)}`] }),
+      D('c', 3, 176, ['되돌림', '한도 안?'], { t: '되돌림 한도', pass: '예', d: '되돌림은 세션당 3회까지, 같은 항목이 연속으로 걸리면 2번까지만 한다',
+        exit: { label: '아니오', lines: () => ['원장에만 남김'], skip: true, bus: true } }),
+      O('back', 4, 176, m => ['되돌림', `${n0(m.checks.blocked)}번`], { d: '사유를 돌려주고 모델을 한 번 더 돌게 한다' }),
+      O('out', 8, 66, () => ['통과', '(항목을', '넣지 않음)'], { d: '턴 종료는 항목을 넣지 않는다. 걸렸을 때만 사유를 돌려준다', dimWhen: m => !m.rows }),
+    ],
+    edges: [['a', 'b'], ['b', 'out'], ['b', 'c', { down: true, label: '아니오' }], ['c', 'back']] },
 ];
 const LANE_BY = Object.fromEntries(LANES.map(l => [l.id, l]));
+// 카드의 작은 띠에 쓰는 단계(순서도의 처리·판단 노드). chip:false 는 뺀다.
+const flowNodes = lane => lane.nodes.filter(n => (n.kind === 'P' || n.kind === 'D') && n.chip !== false && n.t);
 // 훅이 아닌 사건(모델·사람이 부르는 것)
 const EVENTS = [['find', '조회', 'heka find'], ['add', '등록', 'heka add'], ['pending', '대기함 결정', 'pending'],
   ['flag', '표시', 'flag'], ['retire', '은퇴', 'retire']];
@@ -55,7 +125,6 @@ function el(tag, props, ...kids) {
   for (const c of kids.flat(Infinity)) if (c != null && c !== false) e.append(c.nodeType ? c : document.createTextNode(String(c)));
   return e;
 }
-const n0 = v => (Number.isFinite(v) ? v : 0).toLocaleString('ko-KR');
 const arr = v => (Array.isArray(v) ? v : v ? [v] : []);
 const clip = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) + '…' : s; };
 const short8 = s => String(s || '').slice(0, 8);
@@ -64,7 +133,6 @@ function fmtTime(ts) {
   if (!ts || isNaN(d)) return ts || '';
   return d.toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 }
-const ms = v => `${n0(v)}ms`;
 const link = (href, text, props) => el('a', { href, text, ...props });
 const itemLink = id => link('#/items/' + encodeURIComponent(id), id, { class: 'mono' });
 
@@ -122,88 +190,6 @@ async function renderHead() {
   }
 }
 
-// ---------- 구조도 ----------
-function stageFlat(lane) { return lane.cols.flat().filter(Boolean); }
-const sumDrops = (m, keys) => keys.reduce((a, k) => a + ((m.dropped || {})[k] || 0), 0);
-
-// 단계 상자 안에 쓸 숫자 줄들
-function stageLines(st, m) {
-  if (st.k === 'dict') return [`시킨 동작 ${n0(m.asked)}건`, `거절 ${n0(m.refused)}건`];
-  if (st.k === 'judge') {
-    const j = m.judges;
-    if (!j.n) return ['판정 0번'];
-    return [`판정 ${n0(j.n)}번 · 넣으라 ${n0(j.inject)}번`, `시간 초과 ${n0(j.timeout)}번 · 오류 ${n0(j.error)}번`, `중앙 ${ms(j.ms.median)} · 95% ${ms(j.ms.p95)}`];
-  }
-  if (st.k === 'check') {
-    const c = m.checks;
-    const out = [];
-    if (m.id !== 'stop') out.push(`확인 요구 ${n0(m.confirm)}건 · 허용 사용 ${n0(m.grants_used)}번`);
-    out.push(`검사 통과 ${n0(c.pass)} · 걸림 ${n0(c.fail)} · 건너뜀 ${n0(c.skip)}`);
-    return out;
-  }
-  return [];
-}
-function stageActive(st, m) {
-  if (st.drops.length && sumDrops(m, st.drops) > 0) return true;
-  if (st.k === 'dict') return m.asked + m.refused > 0;
-  if (st.k === 'judge') return m.judges.n > 0;
-  if (st.k === 'check') return m.confirm + m.grants_used + m.checks.pass + m.checks.fail + m.checks.skip > 0;
-  return m.rows > 0;
-}
-function stageBox(st, m) {
-  const drop = st.drops.length ? sumDrops(m, st.drops) : null;
-  const nums = stageLines(st, m);
-  return el('div', { class: 'stage' + (stageActive(st, m) ? '' : ' zero') },
-    el('div', { class: 'st-t', text: st.t }),
-    st.d ? el('div', { class: 'st-d', text: st.d }) : null,
-    nums.map(t => el('div', { class: 'st-n', text: t })),
-    drop == null ? null : el('div', { class: 'drop' + (drop ? '' : ' z'), text: `탈락 ${n0(drop)}건` }));
-}
-function flowEl(lane, m) {
-  const parts = [];
-  lane.cols.forEach((col, i) => {
-    if (i) parts.push(el('div', { class: 'arrow', 'aria-hidden': 'true' }));
-    parts.push(el('div', { class: 'col' }, col.map(st => st ? stageBox(st, m) : el('div', { class: 'ghost' }))));
-  });
-  const wrap = el('div', { class: 'flow-wrap' });
-  if (lane.pre === 'tool_made') {
-    wrap.append(el('div', { class: 'skipbox' + (m.tool_made ? '' : ' dim'), text: `도구가 만든 프롬프트는 건너뜀: ${n0(m.tool_made)}번 (아래 두 갈래를 모두 지나지 않음)` }));
-  }
-  wrap.append(el('div', { class: 'flow' }, parts));
-  if (lane.pickLane && m.pick.n > 0) {
-    wrap.append(el('div', { class: 'pickbox' }, '모델 후보(기록만 함, 주입에는 쓰이지 않음) ',
-      el('b', { text: `${n0(m.pick.n)}번` }), ` · 고른 ${n0(m.pick.picked)}건 중 판정 통과 ${n0(m.pick.picked_inject)}건`,
-      (m.pick.error || m.pick.timeout) ? ` · 오류 ${n0(m.pick.error)} · 시간 초과 ${n0(m.pick.timeout)}` : ''));
-  }
-  return wrap;
-}
-function outEl(lane, m) {
-  const o = el('div', { class: 'zone-out' });
-  if (lane.id === 'stop') {
-    o.append(el('div', { class: 'big', text: `되돌림 ${n0(m.checks.blocked)}번` }), el('div', { class: 'muted', text: '걸리면 사유를 돌려주고 한 번 더 돌게 함. 항목을 넣지는 않음' }));
-    return o;
-  }
-  o.append(el('div', { class: 'big' + (m.injected ? '' : ' dim'), text: `넣은 항목 ${n0(m.injected)}건` }),
-    el('div', { class: m.tokens ? '' : 'dim', text: `토큰 약 ${n0(m.tokens)}` }));
-  if (lane.id === 'prompt') {
-    o.append(el('div', { class: 'out-item muted', text: '필수 항목 주입 · 허용 기록 · 참고 항목 주입 또는 침묵' }),
-      el('div', { class: 'out-item' + (m.rows_silent ? '' : ' dim'), text: `침묵 ${n0(m.rows_silent)}번` }));
-  } else if (lane.id === 'tool') {
-    o.append(el('div', { class: 'out-item' + (m.confirm ? '' : ' dim'), text: `확인 요구 ${n0(m.confirm)}건` }),
-      el('div', { class: 'out-item' + (m.checks.blocked ? '' : ' dim'), text: `막기 ${n0(m.checks.blocked)}번` }));
-  }
-  return o;
-}
-function laneHead(lane, m, open) {
-  const parts = [`${n0(m.rows)}번`, `그중 넣은 것 ${n0(m.rows_injected)}번 · 침묵 ${n0(m.rows_silent)}번`];
-  if (m.shadow_rows) parts.push(`그림자 ${n0(m.shadow_rows)}번`);
-  return el('button', { type: 'button', class: 'lane-head', 'aria-expanded': String(open) },
-    el('span', { class: 'lane-caret', text: open ? '▼' : '▶' }),
-    el('span', { class: 'lane-title', text: lane.title }),
-    el('span', { class: 'lane-ev', text: lane.event }),
-    el('span', { class: 'lane-count' + (m.rows ? '' : ' dim'), text: parts.join(' · ') }),
-    el('span', { class: 'lane-time' + (m.rows ? '' : ' dim'), text: `처리 시간 중앙 ${ms(m.duration_ms.median)} · 95% ${ms(m.duration_ms.p95)}` }));
-}
 function laneDetail(lane, m) {
   const d = el('div', { class: 'lane-detail' });
   const tab = rows => el('table', {}, rows.map(r => el('tr', {}, el('th', { text: r[0] }), el('td', { text: r[1] }))));
@@ -235,44 +221,226 @@ function setOpenInUrl(set) {
   history.replaceState(null, '', '#' + path + q);
 }
 
+// ---------- 구조도: 좌우로 진행하는 순서도(SVG) ----------
+const SVGNS = 'http://www.w3.org/2000/svg';
+function sv(tag, attrs, ...kids) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'text') e.textContent = v; else e.setAttribute(k, v);
+  }
+  for (const c of kids.flat(Infinity)) if (c) e.append(c);
+  return e;
+}
+// 칸 배치: 0=시작, 1=어떤 이벤트인가, 2~8=갈래 안, 9=원장 기록, 10=끝
+const COL_W = [84, 106, 106, 106, 106, 106, 106, 106, 106, 106, 44], GAP = 28, MARGIN = 10, NH = 50, DH = 74;
+const colLeft = c => MARGIN + COL_W.slice(0, c).reduce((a, w) => a + w + GAP, 0);
+const FLOW_W = colLeft(10) + COL_W[10] + MARGIN;
+const BUS_X = colLeft(8) + COL_W[8] + 14, EBUS_X = colLeft(1) + COL_W[1] + 14;
+const LH = 12.5; // 글줄 높이
+
+// 글줄들을 (cx, cy) 가운데에 놓는다
+function textLines(lines, cx, cy, cls) {
+  const t = sv('text', { class: cls || 't', 'text-anchor': 'middle' });
+  const y0 = cy - ((lines.length - 1) * LH) / 2 + 3.5;
+  lines.forEach((s, i) => t.append(sv('tspan', { x: cx, y: y0 + i * LH, text: s })));
+  return t;
+}
+function geom(l, cy, w, h) { return { l, r: l + w, cx: l + w / 2, cy, t: cy - h / 2, b: cy + h / 2, w, h }; }
+
+function nodeGeom(n, top, m) {
+  const w = n.w || COL_W[n.col];
+  const lines = typeof n.lines === 'function' ? n.lines(m) : n.lines;
+  const h = n.h || (n.kind === 'D' ? DH : n.kind === 'O' ? Math.max(NH, lines.length * LH + 16) : NH);
+  return { ...geom(colLeft(n.col), top + n.y, w, h), lines };
+}
+
+// 갈래 하나를 그린다. 반환: 원장으로 모이는 y 들과 첫 노드 위치
+function drawLane(lane, m, top, open, onToggle) {
+  const g = sv('g', { class: 'lane-g' + (m.rows ? '' : ' dim'), style: `--mc: var(--m-${lane.id})`, role: 'group' },
+    sv('title', { text: `${lane.title} (${lane.event}) 순서도` }));
+  const x0 = colLeft(2) - 8, x1 = colLeft(8) + COL_W[8] + 8;
+  const body = sv('g', { transform: `translate(0,0)` });
+  g.append(sv('rect', { class: 'band', x: x0, y: top, width: x1 - x0, height: lane.h, rx: 6 }), body);
+  // 머리줄(누르면 상세가 펼쳐진다)
+  const parts = [`${n0(m.rows)}번`, `넣은 것 ${n0(m.rows_injected)}번`, `침묵 ${n0(m.rows_silent)}번`];
+  if (m.shadow_rows) parts.push(`그림자 ${n0(m.shadow_rows)}번`);
+  const caret = sv('tspan', { text: open ? '▼ ' : '▶ ' });
+  const hd = sv('g', { class: 'lane-hd', tabindex: '0', role: 'button', 'aria-expanded': String(open) },
+    sv('rect', { class: 'hd-bg', x: x0 + 2, y: top + 2, width: x1 - x0 - 4, height: 22, rx: 4 }),
+    sv('text', { class: 'hd-t', x: x0 + 10, y: top + 17 }, caret, sv('tspan', { class: 'hd-title', text: lane.title }),
+      sv('tspan', { class: 'hd-ev', dx: 8, text: lane.event }), sv('tspan', { dx: 14, text: parts.join(' · ') })),
+    sv('text', { class: 'hd-time', x: x1 - 10, y: top + 17, 'text-anchor': 'end', text: `처리 시간 중앙 ${ms(m.duration_ms.median)} · 95% ${ms(m.duration_ms.p95)}` }));
+  const toggle = () => { onToggle(); const o = hd.getAttribute('aria-expanded') !== 'true'; hd.setAttribute('aria-expanded', String(o)); caret.textContent = o ? '▼ ' : '▶ '; };
+  hd.addEventListener('click', toggle);
+  hd.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+  hd.append(sv('title', { text: '누르면 이 순간의 자세한 숫자가 아래에 펼쳐집니다' }));
+  g.append(hd);
+
+  const nodes = {}, shown = lane.nodes.filter(n => !n.show || n.show(m));
+  for (const n of shown) nodes[n.id] = nodeGeom(n, top, m);
+  const busYs = [];
+  const labelDone = new Set();
+  const edgeG = sv('g', {}), nodeG = sv('g', {});
+  g.append(edgeG, nodeG);
+  const line = (d, o) => edgeG.append(sv('path', { class: 'edge' + (o && o.dot ? ' dot' : ''), d, 'marker-end': o && o.noArrow ? null : 'url(#arr)' }));
+  const elabel = (x, y, s, anchor) => edgeG.append(sv('text', { class: 'el', x, y, 'text-anchor': anchor || 'middle', text: s }));
+
+  // 간선
+  for (const [a, b, o = {}] of lane.edges) {
+    const A = nodes[a], B = nodes[b];
+    if (!A || !B) continue;
+    const an = lane.nodes.find(n => n.id === a);
+    if (o.down) {
+      line(`M${A.cx},${A.b} V${B.t}`, o);
+      if (o.label) elabel(A.cx + 6, (A.b + B.t) / 2 + 3, o.label, 'start');
+      continue;
+    }
+    if (Math.abs(A.cy - B.cy) < 1) {
+      line(`M${A.r},${A.cy} H${B.l}`, o);
+      if (an.pass && an.kind === 'D' && !labelDone.has(a)) { labelDone.add(a); const gp = B.l - A.r; elabel(gp > 60 ? A.r + 20 : A.r + gp / 2, A.cy - 5, an.pass); }
+    } else {
+      const mid = B.l - 14;
+      line(`M${A.r},${A.cy} H${mid} V${B.cy} H${B.l}`, o);
+      if (an.pass && an.kind === 'D' && !labelDone.has(a) && mid - A.r >= 60) { labelDone.add(a); elabel(A.r + 20, A.cy - 5, an.pass); }
+    }
+  }
+
+  // 노드와 출구
+  for (const n of shown) {
+    const G = nodes[n.id];
+    const cls = n.kind === 'D' ? 'nd dec' : n.kind === 'O' ? 'nd out' : n.kind === 'X' ? 'nd rec dash' : 'nd proc';
+    const dimmed = (n.kind === 'O' && (n.dimWhen ? n.dimWhen(m) : m.injected === 0 && n.id !== 'back')) || (n.id === 'back' && !m.checks.blocked);
+    const ng = sv('g', { class: 'nodeg' + (dimmed ? ' dim' : '') });
+    if (n.d) ng.append(sv('title', { text: `${n.t || n.id}: ${n.d}` }));
+    if (n.kind === 'D') ng.append(sv('path', { class: cls, d: `M${G.cx},${G.t} L${G.r},${G.cy} L${G.cx},${G.b} L${G.l},${G.cy} Z` }));
+    else ng.append(sv('rect', { class: cls, x: G.l, y: G.t, width: G.w, height: G.h, rx: n.kind === 'O' ? 18 : n.kind === 'X' ? 5 : 4 }));
+    ng.append(textLines(G.lines, n.kind === 'X' ? G.cx : G.cx, G.cy, n.kind === 'D' ? 't dt' : 't'));
+    nodeG.append(ng);
+    if (n.bus) busYs.push(G.cy);
+    // 아래 출구
+    let bottom = G.b;
+    if (n.exit && !n.exit.none) {
+      const lines = n.exit.lines(m), ph = lines.length * 13 + 11;
+      const pt = G.b + 28, P = geom(G.l, pt + ph / 2, G.w, ph);
+      const zero = n.exit.n ? n.exit.n(m) === 0 : false;
+      const eg = sv('g', { class: 'exitg' + (zero ? ' dim' : '') });
+      eg.append(sv('path', { class: 'edge', d: `M${G.cx},${G.b} V${P.t}`, 'marker-end': 'url(#arr)' }),
+        sv('text', { class: 'el', x: G.cx + 6, y: G.b + 18, 'text-anchor': 'start', text: n.exit.label }),
+        sv('rect', { class: 'pill ' + (n.exit.skip ? 'skip' : 'drop'), x: P.l, y: P.t, width: P.w, height: P.h, rx: P.h / 2 > 14 ? 14 : P.h / 2 }),
+        textLines(lines, P.cx, P.cy, 't pt'));
+      edgeG.append(eg);
+      if (n.exit.bus) { edgeG.append(sv('path', { class: 'edge', d: `M${P.r},${P.cy} H${BUS_X}` })); busYs.push(P.cy); }
+      bottom = P.b;
+    }
+    if (n.note) {
+      const lines = n.note(m);
+      const joined = lines.join(''), zero = /\d/.test(joined) && !/[1-9]/.test(joined);
+      nodeG.append(textLines(lines, G.cx, bottom + 8 + (lines.length * LH) / 2, 't tm' + (zero ? ' dim' : '')));
+    }
+    if (n.noteRight) {
+      const lines = n.noteRight(m);
+      const t = textLines(lines, G.cx + 46, G.b + 12 + (lines.length * LH) / 2, 't tm');
+      t.setAttribute('text-anchor', 'start'); t.querySelectorAll('tspan').forEach(s => s.setAttribute('x', G.cx + 46));
+      nodeG.append(t);
+    }
+    if (n.bus) edgeG.append(sv('path', { class: 'edge', d: `M${G.r},${G.cy} H${BUS_X}` }));
+  }
+  // 기록만 하는 점선 노드도 원장으로 잇는다(점선)
+  for (const n of shown) if (n.kind === 'X') {
+    const G = nodes[n.id];
+    edgeG.append(sv('path', { class: 'edge dot', d: `M${G.r},${G.cy} H${BUS_X}` }));
+  }
+  const first = lane.nodes[0];
+  return { g, firstY: top + first.y, firstL: colLeft(first.col), busYs };
+}
+
+function legendEl() {
+  const g = sv('g', { class: 'legend' });
+  let x = MARGIN;
+  const item = (shape, label, w) => { g.append(shape(x), sv('text', { class: 't tm', x: x + 46, y: 15, text: label })); x += w; };
+  item(x0 => sv('rect', { class: 'nd out lg', x: x0, y: 4, width: 38, height: 18, rx: 9 }), '시작·끝(나가는 것)', 130);
+  item(x0 => sv('rect', { class: 'nd proc lg', x: x0, y: 4, width: 38, height: 18, rx: 3 }), '처리', 80);
+  item(x0 => sv('path', { class: 'nd dec lg', d: `M${x0 + 19},2 L${x0 + 38},13 L${x0 + 19},24 L${x0},13 Z` }), '판단 (위쪽은 오른쪽으로, 아래쪽은 탈락·건너뜀)', 300);
+  item(x0 => sv('rect', { class: 'pill drop lg', x: x0, y: 5, width: 38, height: 16, rx: 8 }), '탈락 끝 표시', 120);
+  item(x0 => sv('rect', { class: 'pill skip lg', x: x0, y: 5, width: 38, height: 16, rx: 8 }), '건너뜀·침묵·남김', 130);
+  item(x0 => sv('rect', { class: 'nd rec dash lg', x: x0, y: 4, width: 38, height: 18, rx: 3 }), '기록만 하고 주입에는 안 쓰임', 200);
+  g.append(sv('text', { class: 't tm', x: x + 6, y: 15, text: '"번"은 훅이 불린 횟수, "건"은 항목 수' }));
+  return g;
+}
+
+function overviewSvg(ov, open, onToggle) {
+  const byId = Object.fromEntries(ov.moments.map(m => [m.moment, m]));
+  const LEG = 30, GAP_L = 12;
+  let top = LEG;
+  const lanes = [];
+  for (const lane of LANES) {
+    const m = { id: lane.id, ...byId[lane.id] };
+    const h = lane.h - (lane.nodes.some(n => n.kind === 'X') && !(m.pick && m.pick.n > 0) ? 52 : 0);
+    lanes.push({ lane, m, top, h });
+    top += h + GAP_L;
+  }
+  const totalH = top;
+  const svg = sv('svg', { class: 'flow', width: FLOW_W, height: totalH, viewBox: `0 0 ${FLOW_W} ${totalH}`, role: 'img', 'aria-label': 'AI 도구의 이벤트마다 heka 가 하는 일을 왼쪽에서 오른쪽으로 보인 순서도' });
+  svg.append(sv('defs', {}, sv('marker', { id: 'arr', viewBox: '0 0 8 8', refX: '7', refY: '4', markerWidth: '7', markerHeight: '7', orient: 'auto' }, sv('path', { class: 'arrowhead', d: 'M0,0 L8,4 L0,8 Z' }))));
+  svg.append(legendEl());
+  const drawn = [];
+  const allBus = [];
+  for (const L of lanes) {
+    L.lane = { ...L.lane, h: L.h };
+    const r = drawLane(L.lane, L.m, L.top, open.has(L.lane.id), () => onToggle(L.lane.id));
+    drawn.push(r); svg.append(r.g); allBus.push(...r.busYs);
+  }
+  // 시작 → 어떤 이벤트인가 → 다섯 갈래
+  const ys = drawn.map(d => d.firstY), cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  const S = geom(colLeft(0), cy, COL_W[0], 74), EV = geom(colLeft(1), cy, COL_W[1], DH);
+  const gl = sv('g', { class: 'glob' });
+  gl.append(sv('path', { class: 'edge', d: `M${S.r},${cy} H${EV.l}`, 'marker-end': 'url(#arr)' }));
+  for (const d of drawn) gl.append(sv('path', { class: 'edge', d: `M${EV.r},${cy} H${EBUS_X} V${d.firstY} H${d.firstL}`, 'marker-end': 'url(#arr)' }));
+  gl.append(sv('rect', { class: 'nd gstart', x: S.l, y: S.t, width: S.w, height: S.h, rx: 18 }), textLines(['AI 도구에서', '이벤트', '발생'], S.cx, cy, 't'),
+    sv('path', { class: 'nd dec gdec', d: `M${EV.cx},${EV.t} L${EV.r},${EV.cy} L${EV.cx},${EV.b} L${EV.l},${EV.cy} Z` }), textLines(['어떤', '이벤트?'], EV.cx, cy, 't dt'));
+  // 원장으로 모임 → 끝
+  const minY = Math.min(...allBus), maxY = Math.max(...allBus), recY = (minY + maxY) / 2;
+  const R = geom(colLeft(9), recY, COL_W[9], 112), E = geom(colLeft(10), recY, COL_W[10], 40);
+  gl.append(sv('path', { class: 'edge', d: `M${BUS_X},${minY} V${maxY}` }),
+    sv('path', { class: 'edge', d: `M${BUS_X},${recY} H${R.l}`, 'marker-end': 'url(#arr)' }),
+    sv('path', { class: 'edge', d: `M${R.r},${recY} H${E.l}`, 'marker-end': 'url(#arr)' }),
+    sv('rect', { class: 'nd rec', x: R.l, y: R.t, width: R.w, height: R.h, rx: 4 }),
+    textLines(['모든 판단을', '원장에', '한 줄 기록', `이 기간`, `${n0(ov.range.rows)}줄`], R.cx, recY, 't'),
+    sv('rect', { class: 'nd gstart', x: E.l, y: E.t, width: E.w, height: E.h, rx: 18 }), textLines(['끝'], E.cx, recY, 't'));
+  svg.append(gl);
+  return svg;
+}
+
 async function viewOverview(root, token) {
   const ov = await api('/api/overview' + rangeQuery());
   if (token !== routeToken) return;
   const open = new Set((hashQuery().get('open') || '').split(',').filter(x => LANE_BY[x]));
-  const view = el('div', {});
-  view.append(el('p', { class: 'muted', text: `${rangeLabel()} · 줄 ${n0(ov.range.rows)}개 · 세션 ${n0(ov.range.sessions)}개. "번"은 훅이 불린 횟수, "건"은 항목 수입니다.` }));
-  if (!ov.range.rows) { view.append(el('div', { class: 'empty', text: '이 기간에는 기록이 없습니다' })); }
-  view.append(el('div', { class: 'zones' }, el('div', { text: 'AI 도구의 이벤트' }), el('div', { text: 'heka 가 하는 일' }), el('div', { text: '나가는 것' })));
   const byId = Object.fromEntries(ov.moments.map(m => [m.moment, m]));
-  for (const lane of LANES) {
-    const m = { id: lane.id, ...(byId[lane.id]) };
-    if (!byId[lane.id]) continue;
-    const box = el('section', { class: 'lane', mc: lane.id });
-    const draw = () => {
-      const isOpen = open.has(lane.id);
-      const body = el('div', { class: 'lane-body' },
-        el('div', { class: 'zone-in' }, el('div', { class: 'ev', text: lane.event }), el('div', { class: 'muted', text: lane.inDesc })),
-        flowEl(lane, m), outEl(lane, m));
-      const head = laneHead(lane, m, isOpen);
-      head.addEventListener('click', () => { if (open.has(lane.id)) open.delete(lane.id); else open.add(lane.id); setOpenInUrl(open); draw(); });
-      box.replaceChildren(...[head, body, isOpen ? laneDetail(lane, m) : null].filter(Boolean));
-    };
-    draw();
-    view.append(box);
-  }
-  // 훅이 아닌 사건
+  const details = el('div', { class: 'details' });
+  const drawDetails = () => {
+    details.replaceChildren(...LANES.filter(l => open.has(l.id)).map(l => el('section', { class: 'lane-detail-box', mc: l.id },
+      el('h3', {}, el('span', { class: 'mbadge', text: l.short }), ' ', l.title), laneDetail(l, { id: l.id, ...byId[l.id] }))));
+  };
+  const onToggle = id => { if (open.has(id)) open.delete(id); else open.add(id); setOpenInUrl(open); drawDetails(); };
+  const view = el('div', {});
+  view.append(el('p', { class: 'muted', text: `${rangeLabel()} · 줄 ${n0(ov.range.rows)}개 · 세션 ${n0(ov.range.sessions)}개. 갈래 머리줄을 누르면 아래에 자세한 숫자가 펼쳐집니다. 탈락 건수는 그 순간 전체 합계입니다.` }));
+  if (!ov.range.rows) view.append(el('div', { class: 'empty', text: '이 기간에는 기록이 없습니다' }));
+  const wrap = el('div', { class: 'flow-wrap' });
+  wrap.append(overviewSvg(ov, open, onToggle));
+  view.append(wrap, details);
+  drawDetails();
   view.append(el('div', { class: 'band' }, el('h3', { text: '모델·사람이 부르는 것 (훅이 아닌 사건)' }),
     el('div', { class: 'chips' }, EVENTS.map(([k, label, cmd]) => {
       const v = ov.events[k] || 0;
       return el('span', { class: 'chip' + (v ? '' : ' zero') }, label, ' ', el('b', { text: n0(v) + '번' }), ' ', el('small', { text: cmd }));
     })),
     el('p', { class: 'muted', text: '조회는 조회 전용 항목까지 찾고, 등록·표시·은퇴·대기함 결정은 항목 파일을 바꿉니다.' })));
-  const total = ov.range.rows;
   view.append(el('div', { class: 'band' }, el('h3', { text: '구조: 항목이 어디에서 읽히고 판단이 어디에 남는가' }),
     el('div', { class: 'struct' }, el('span', { class: 'box', text: '항목 파일 (items/*.md)' }), el('span', { class: 'muted', text: '→' }),
       el('span', { class: 'box', text: '색인' }), el('span', { class: 'muted', text: '→ 위의 모든 판단이 읽음 →' }),
       el('span', { class: 'box', text: '모든 판단' }), el('span', { class: 'muted', text: '→' }),
-      el('span', { class: 'box ledger', text: `원장: 이 기간 ${n0(total)}줄` }))));
+      el('span', { class: 'box ledger', text: `원장: 이 기간 ${n0(ov.range.rows)}줄` }))));
   root.replaceChildren(view);
 }
 
@@ -285,30 +453,25 @@ function stageChips(row) {
   const dropBy = {};
   for (const d of row.dropped || []) dropBy[d.stage] = (dropBy[d.stage] || 0) + 1;
   const seen = new Set();
-  for (const st of stageFlat(lane)) {
+  const cs = row.checks || [], cf = row.confirm || [];
+  for (const st of flowNodes(lane)) {
     if (seen.has(st.t)) continue;
     seen.add(st.t);
     let cls = 'pc', txt = st.t;
-    const dn = st.drops.reduce((a, k) => a + (dropBy[k] || 0), 0);
+    const dn = (st.drops || []).reduce((a, k) => a + (dropBy[k] || 0), 0);
     if (dn) { cls += ' drop'; txt += ` 탈락 ${dn}건`; }
     if (st.k === 'judge' && (row.judges || []).length) {
       const j = row.judges;
       cls += ' judge'; txt += ` ${j.length}번`;
       if (j.some(x => x.error || x.timeout)) txt += ' (오류·초과)';
     }
-    if (st.k === 'check') {
-      const cs = row.checks || [];
-      if (cs.length || (row.confirm || []).length) {
-        cls += cs.some(c => c.blocked) ? ' block' : ' check';
-        const parts = [];
-        if ((row.confirm || []).length) parts.push(`확인 ${row.confirm.length}건`);
-        if (cs.length) parts.push(`검사 ${cs.length}건${cs.some(c => c.result === 'fail') ? ' 걸림' : ''}`);
-        txt += ' ' + parts.join(' · ');
-      }
+    if (st.k === 'confirm' && cf.length) { cls += ' check'; txt += ` 요구 ${cf.length}건`; }
+    if (st.k === 'check' && cs.length) {
+      cls += cs.some(c => c.blocked) ? ' block' : ' check';
+      txt += ` ${cs.length}건${cs.some(c => c.result === 'fail') ? ' 걸림' : ''}`;
     }
     if (st.k === 'dict' && ((row.asked || []).length || (row.refused || []).length)) { cls += ' judge'; txt += ` 시킨 ${(row.asked || []).length}·거절 ${(row.refused || []).length}`; }
-    chips.push(el('span', { class: cls, text: txt }));
-    chips.push(el('span', { class: 'pa', text: '›' }));
+    chips.push(el('span', { class: cls, text: txt }), el('span', { class: 'pa', text: '›' }));
   }
   chips.pop();
   const inj = (row.injected || []).length;
