@@ -18,6 +18,9 @@ import (
 // 사용자가 친 글이 아닌 줄의 머리다. 도구가 만들어 사용자 글처럼 넣은 것들이다.
 var systemPrefixes = []string{"<local-command", "<command-name>", "<system-reminder>"}
 
+// askTool 은 사용자에게 선택지를 묻는 도구의 이름이다. 그 결과에는 사용자의 답이 들어 있다.
+const askTool = "AskUserQuestion"
+
 // transcriptLine 은 세션 기록 파일의 한 줄에서 쓰는 필드다.
 type transcriptLine struct {
 	Type        string `json:"type"`
@@ -26,12 +29,48 @@ type transcriptLine struct {
 	Message     struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
+	ToolUseResult json.RawMessage `json:"toolUseResult"`
+	Attachment    *struct {
+		Type   string `json:"type"`
+		Prompt string `json:"prompt"`
+		Origin struct {
+			Kind string `json:"kind"`
+		} `json:"origin"`
+	} `json:"attachment"`
+}
+
+// contentPart 는 message.content 가 배열일 때의 한 칸이다.
+type contentPart struct {
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	ToolUseID string `json:"tool_use_id"`
+}
+
+// askResult 는 askTool 결과의 toolUseResult 다. answers 값은 문자열이거나 문자열 배열이다.
+type askResult struct {
+	Questions []struct {
+		Question string `json:"question"`
+		Options  []struct {
+			Label string `json:"label"`
+		} `json:"options"`
+	} `json:"questions"`
+	Answers     map[string]json.RawMessage `json:"answers"`
+	Annotations map[string]json.RawMessage `json:"annotations"` // 값마다 {notes, preview}. preview 는 AI 가 쓴 글이다
 }
 
 // UserTexts 는 Claude Code 세션 기록 파일(한 줄에 JSON 하나)에서 사용자가 친 글만 모아 돌려준다.
-// "type":"user" 줄의 message.content 를 읽되, 다음은 사용자가 친 글로 보지 않는다.
-// tool_result 가 든 줄, isMeta·isSidechain 이 참인 줄, toolPrefixes 나 systemPrefixes 로 시작하는 글.
-// AI 의 글("type":"assistant")은 읽지 않는다. 깨진 줄은 건너뛰고, 파일을 못 열면 오류를 돌려준다.
+// 읽는 곳은 세 군데다.
+//   - "type":"user" 줄의 message.content 에 든 글.
+//   - askTool 결과의 답과 메모. 사용자가 고른 선택지 라벨은 AI 가 쓴 글이라 빼고, 직접 친 글만 읽는다.
+//   - 작업 중에 보낸 메시지("type":"attachment", attachment.type queued_command). origin.kind 가 human 인 것만 읽는다.
+//     peer·coordinator 는 다른 세션이나 에이전트가 보낸 글이다.
+//
+// 다음은 사용자가 친 글로 보지 않는다. askTool 이 아닌 도구의 tool_result 가 든 줄(AI 가 만든 출력이 들어갈 수 있다),
+// isMeta·isSidechain 이 참인 줄, toolPrefixes 나 systemPrefixes 로 시작하는 글.
+// AI 의 글("type":"assistant")은 askTool 호출의 id 를 기억하는 데만 쓴다. 깨진 줄은 건너뛰고, 파일을 못 열면 오류를 돌려준다.
+// 기록 형식은 Claude Code 가 문서로 내지 않은 내부 형식이라, 형식이 바뀌면 여기서 읽지 못하는 글이 생긴다.
 func UserTexts(path string, toolPrefixes []string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -39,11 +78,18 @@ func UserTexts(path string, toolPrefixes []string) ([]string, error) {
 	}
 	defer f.Close()
 	r := bufio.NewReaderSize(f, 1<<20)
+	asks := map[string]bool{} // askTool 호출의 id
 	var out []string
 	for {
 		line, err := r.ReadBytes('\n')
-		if len(bytes.TrimSpace(line)) > 0 && bytes.Contains(line, []byte(`"user"`)) {
-			out = append(out, userLineTexts(line, toolPrefixes)...)
+		if len(bytes.TrimSpace(line)) > 0 && mayHoldUserText(line) {
+			for _, t := range lineTexts(line, asks) {
+				head := strings.TrimSpace(t)
+				if head == "" || hasAnyPrefix(head, systemPrefixes) || hasAnyPrefix(head, toolPrefixes) {
+					continue
+				}
+				out = append(out, t)
+			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -54,41 +100,128 @@ func UserTexts(path string, toolPrefixes []string) ([]string, error) {
 	}
 }
 
-func userLineTexts(line []byte, toolPrefixes []string) []string {
+// mayHoldUserText 는 JSON 을 풀기 전에 볼 필요가 없는 줄을 거른다.
+func mayHoldUserText(line []byte) bool {
+	return bytes.Contains(line, []byte(`"user"`)) || bytes.Contains(line, []byte(`"queued_command"`)) ||
+		bytes.Contains(line, []byte(`"`+askTool+`"`))
+}
+
+// lineTexts 는 한 줄에서 사용자가 친 글을 꺼낸다. assistant 줄이면 askTool 호출의 id 를 asks 에 더한다.
+func lineTexts(line []byte, asks map[string]bool) []string {
 	var tl transcriptLine
-	if json.Unmarshal(line, &tl) != nil || tl.Type != "user" || tl.IsMeta || tl.IsSidechain {
+	if json.Unmarshal(line, &tl) != nil || tl.IsMeta || tl.IsSidechain {
+		return nil
+	}
+	switch tl.Type {
+	case "assistant":
+		var parts []contentPart
+		if json.Unmarshal(tl.Message.Content, &parts) == nil {
+			for _, p := range parts {
+				if p.Type == "tool_use" && p.Name == askTool && p.ID != "" {
+					asks[p.ID] = true
+				}
+			}
+		}
+		return nil
+	case "attachment":
+		if a := tl.Attachment; a != nil && a.Type == "queued_command" && a.Origin.Kind == "human" {
+			return []string{a.Prompt}
+		}
+		return nil
+	case "user":
+	default:
+		return nil
+	}
+	var s string
+	if json.Unmarshal(tl.Message.Content, &s) == nil {
+		return []string{s}
+	}
+	var parts []contentPart
+	if json.Unmarshal(tl.Message.Content, &parts) != nil {
 		return nil
 	}
 	var texts []string
-	var s string
-	if json.Unmarshal(tl.Message.Content, &s) == nil {
-		texts = []string{s}
-	} else {
-		var parts []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(tl.Message.Content, &parts) != nil {
-			return nil
-		}
-		for _, p := range parts {
-			switch p.Type {
-			case "tool_result":
+	for _, p := range parts {
+		switch p.Type {
+		case "tool_result":
+			if !asks[p.ToolUseID] {
 				return nil
-			case "text":
-				texts = append(texts, p.Text)
 			}
+			return askAnswers(tl.ToolUseResult)
+		case "text":
+			texts = append(texts, p.Text)
 		}
+	}
+	return texts
+}
+
+// askAnswers 는 askTool 결과에서 사용자가 직접 친 답과 메모를 돌려준다. 질문 순서를 따른다.
+func askAnswers(raw json.RawMessage) []string {
+	var res askResult
+	if json.Unmarshal(raw, &res) != nil {
+		return nil
 	}
 	var out []string
-	for _, t := range texts {
-		head := strings.TrimSpace(t)
-		if head == "" || hasAnyPrefix(head, systemPrefixes) || hasAnyPrefix(head, toolPrefixes) {
-			continue
+	for _, q := range res.Questions {
+		labels := make([]string, len(q.Options))
+		for i, o := range q.Options {
+			labels[i] = o.Label
 		}
-		out = append(out, t)
+		var one string
+		var many []string
+		if a := res.Answers[q.Question]; json.Unmarshal(a, &one) == nil {
+			if t := typedAnswer(one, labels); t != "" {
+				out = append(out, t)
+			}
+		} else if json.Unmarshal(a, &many) == nil {
+			for _, m := range many {
+				if !slices.Contains(labels, m) && m != "" {
+					out = append(out, m)
+				}
+			}
+		}
+		var note struct {
+			Notes string `json:"notes"`
+		}
+		if json.Unmarshal(res.Annotations[q.Question], &note) == nil && note.Notes != "" {
+			out = append(out, note.Notes)
+		}
 	}
 	return out
+}
+
+// typedAnswer 는 답에서 고른 선택지 라벨을 빼고 남은 글을 돌려준다.
+// 여러 개를 고른 답은 고른 라벨과 직접 친 글을 ", " 로 이은 문자열이다. 그래서 ", " 로 나뉜 칸 단위로 라벨을 찾는다.
+// 라벨 자체에 ", " 가 들어 있을 수 있으므로 칸의 앞머리에서 가장 긴 라벨부터 맞춰 본다.
+func typedAnswer(ans string, labels []string) string {
+	const sep = ", "
+	byLen := slices.Clone(labels)
+	slices.SortFunc(byLen, func(a, b string) int { return len(b) - len(a) })
+	var kept []string
+	for rest := ans; rest != ""; {
+		if l, ok := labelAt(rest, byLen, sep); ok {
+			rest = strings.TrimPrefix(rest[len(l):], sep)
+			continue
+		}
+		i := strings.Index(rest, sep)
+		if i < 0 {
+			kept = append(kept, rest)
+			break
+		}
+		kept = append(kept, rest[:i])
+		rest = rest[i+len(sep):]
+	}
+	return strings.Join(kept, sep)
+}
+
+// labelAt 은 rest 가 라벨 하나로 시작하고 그 뒤가 끝이거나 sep 인지 본다. labels 는 긴 것부터 놓여 있어야 한다.
+func labelAt(rest string, labels []string, sep string) (string, bool) {
+	for _, l := range labels {
+		if l != "" && strings.HasPrefix(rest, l) && (len(rest) == len(l) || strings.HasPrefix(rest[len(l):], sep)) {
+			return l, true
+		}
+	}
+	return "", false
 }
 
 func hasAnyPrefix(s string, prefixes []string) bool {

@@ -79,6 +79,98 @@ func TestUserTexts(t *testing.T) {
 	}
 }
 
+func askUse(id string) map[string]any {
+	return msg("assistant", []any{map[string]any{"type": "tool_use", "id": id, "name": "AskUserQuestion", "input": map[string]any{}}}, nil)
+}
+
+func askResultLine(id string, questions []any, answers, annotations map[string]any) map[string]any {
+	return msg("user", []any{map[string]any{"type": "tool_result", "tool_use_id": id, "content": "The user answered: ..."}},
+		map[string]any{"toolUseResult": map[string]any{"questions": questions, "answers": answers, "annotations": annotations}})
+}
+
+func question(q string, multi bool, labels ...string) map[string]any {
+	var opts []any
+	for _, l := range labels {
+		opts = append(opts, map[string]any{"label": l, "description": "설명"})
+	}
+	return map[string]any{"question": q, "header": "머리", "multiSelect": multi, "options": opts}
+}
+
+func queued(kind, prompt string, extra map[string]any) map[string]any {
+	m := map[string]any{"type": "attachment", "attachment": map[string]any{
+		"type": "queued_command", "prompt": prompt, "commandMode": "prompt", "origin": map[string]any{"kind": kind}}}
+	for k, v := range extra {
+		m[k] = v
+	}
+	return m
+}
+
+// 사용자의 말이 일반 메시지 말고 질문 도구의 답과 작업 중 메시지로 남는 경우다.
+func TestUserTextsAskAndQueued(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.jsonl")
+	writeJSONL(t, p,
+		askUse("ask1"),
+		askResultLine("ask1",
+			[]any{
+				question("방향?", false, "가안 (추천)", "나안"),
+				question("고른 라벨만?", false, "가안 (추천)", "나안"),
+				question("여럿?", true, "하나, 둘", "셋", "넷"),
+				question("배열?", true, "셋", "넷"),
+				question("안 답함?", false, "셋"),
+			},
+			map[string]any{
+				"방향?":     "직접 친 답, 쉼표 포함",
+				"고른 라벨만?": "가안 (추천)",
+				"여럿?":     "하나, 둘, 직접 친 덧붙임, 셋",
+				"배열?":     []any{"넷", "배열 속 직접 친 글"},
+			},
+			map[string]any{"고른 라벨만?": map[string]any{"notes": "메모 글", "preview": "AI 미리보기"}, "여럿?": "모양이 다른 메모"},
+		),
+		// 질문 도구가 아닌 도구의 결과는 같은 모양이어도 읽지 않는다.
+		msg("assistant", []any{map[string]any{"type": "tool_use", "id": "bash1", "name": "Bash", "input": map[string]any{}}}, nil),
+		askResultLine("bash1", []any{question("가짜?", false, "셋")}, map[string]any{"가짜?": "AI 가 만든 출력"}, nil),
+		// id 를 모르는 결과도 읽지 않는다.
+		askResultLine("unknown", []any{question("모름?", false, "셋")}, map[string]any{"모름?": "모르는 id 의 답"}, nil),
+		// 곁가지의 질문 도구 호출은 기억하지 않는다.
+		msg("assistant", []any{map[string]any{"type": "tool_use", "id": "side1", "name": "AskUserQuestion"}}, map[string]any{"isSidechain": true}),
+		askResultLine("side1", []any{question("곁?", false, "셋")}, map[string]any{"곁?": "곁가지 답"}, nil),
+		queued("human", "작업 중 보낸 말", nil),
+		queued("human", "<system-reminder>안내</system-reminder>", nil),
+		queued("peer", "다른 세션의 말", nil),
+		queued("coordinator", "조정자의 말", nil),
+		queued("human", "곁가지 대기 말", map[string]any{"isSidechain": true}),
+		map[string]any{"type": "attachment", "attachment": map[string]any{"type": "task_reminder", "prompt": "다른 첨부"}},
+		map[string]any{"type": "queue-operation", "operation": "enqueue", "content": "대기열 사본"},
+	)
+	got, err := UserTexts(p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"직접 친 답, 쉼표 포함", "메모 글", "직접 친 덧붙임", "배열 속 직접 친 글", "작업 중 보낸 말"}
+	if !slices.Equal(got, want) {
+		t.Errorf("사용자 글 = %q\n기대 %q", got, want)
+	}
+}
+
+func TestTypedAnswer(t *testing.T) {
+	labels := []string{"가", "가, 나", "다 (추천)"}
+	for ans, want := range map[string]string{
+		"가":             "",
+		"가, 나":          "",
+		"가, 나, 다 (추천)":  "",
+		"다 (추천), 직접":    "직접",
+		"직접, 가":         "직접",
+		"직접 글, 그 뒤":     "직접 글, 그 뒤",
+		"가나":            "가나",
+		"":              "",
+		"다 (추천), 가, 끝말": "끝말",
+	} {
+		if got := typedAnswer(ans, labels); got != want {
+			t.Errorf("typedAnswer(%q) = %q, 기대 %q", ans, got, want)
+		}
+	}
+}
+
 func TestTranscriptsGlob(t *testing.T) {
 	root := t.TempDir()
 	mk := func(rel string, age time.Duration) string {
