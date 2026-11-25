@@ -503,16 +503,17 @@ func TestNoGitIsFine(t *testing.T) {
 	}
 }
 
-// 자동 커밋은 items 와 review 를 함께 담고, review 폴더가 없어도 실패하지 않는다.
-func TestFinishRowCommitsItemsAndReview(t *testing.T) {
+// initGit 은 데이터 폴더를 git 저장소로 만들고 git 을 부르는 함수를 돌려준다.
+func initGit(t *testing.T, e Env) func(args ...string) string {
+	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git 없음")
+		t.Skip("git 이 없음")
 	}
 	for k, v := range map[string]string{"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"} {
 		t.Setenv(k, v)
 	}
-	e := newEnv(t)
 	git := func(args ...string) string {
+		t.Helper()
 		out, err := exec.Command("git", append([]string{"-C", e.Home}, args...)...).CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v %s", args, err, out)
@@ -520,9 +521,42 @@ func TestFinishRowCommitsItemsAndReview(t *testing.T) {
 		return strings.TrimSpace(string(out))
 	}
 	git("init", "-q")
+	return git
+}
+
+// 자동 커밋은 이번 등록의 파일만 담고, 손으로 고쳐 두고 커밋하지 않은 다른 항목은 담지 않는다.
+func TestGitCommitOnlyOwnFiles(t *testing.T) {
+	e := newEnv(t)
+	git := initGit(t, e)
+	mustAdd(t, e, base("hand-edited"), "added")
+	if err := os.WriteFile(filepath.Join(e.Home, "items/hand-edited.md"), []byte(read(e, "items/hand-edited.md")+"손으로 더한 줄.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	other := base("other")
+	other.Text, other.About = "커밋 메시지는 한국어로 쓴다.", []string{"커밋 메시지"}
+	mustAdd(t, e, other, "added")
+	if msg := git("log", "-1", "--format=%s"); msg != "add: other" {
+		t.Errorf("커밋 메시지 = %q", msg)
+	}
+	if files := git("show", "--name-only", "--format=", "HEAD"); files != "items/other.md" {
+		t.Errorf("커밋에 담긴 파일 = %q", files)
+	}
+	if st := git("status", "--porcelain", "--", "items"); st != "M items/hand-edited.md" {
+		t.Errorf("손으로 고친 파일은 커밋하지 않고 남아야 함: %q", st)
+	}
+}
+
+// 자동 커밋은 줄이 다룬 항목 파일과 review 의 변경을 담고, review 폴더가 없어도 실패하지 않는다.
+// 등록 판정은 항목 파일을 다루지 않으므로 손으로 고친 항목이 섞이지 않는다.
+func TestFinishRowCommitsOwnItemsAndReview(t *testing.T) {
+	e := newEnv(t)
+	git := initGit(t, e)
 	mustAdd(t, e, base("one"), "added") // review 폴더가 없다
 	if msg := git("log", "-1", "--format=%s"); msg != "add: one" || read(e, "ledger/errors.log") != "" {
 		t.Fatalf("review 폴더 없이 커밋: %q 오류 %q", msg, read(e, "ledger/errors.log"))
+	}
+	if err := os.WriteFile(filepath.Join(e.Home, "items/one.md"), []byte(read(e, "items/one.md")+"손으로 더한 줄.\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(e.Home, "review"), 0o755); err != nil {
 		t.Fatal(err)
@@ -530,17 +564,29 @@ func TestFinishRowCommitsItemsAndReview(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(e.Home, "review", "a--b.json"), []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	FinishRow(e, ledger.Row{Event: "review", Moment: "x"}, "review: a--b")
+	judge := ledger.Row{Event: "register_judge", Moment: "judge-add", Injected: []ledger.Injected{{ID: "one"}}}
+	FinishRow(e, judge, "judge: one")
 	if files := git("show", "--name-only", "--format=", "HEAD"); files != "review/a--b.json" {
-		t.Errorf("review 가 커밋돼야 함: %q", files)
+		t.Errorf("판정은 review 파일만 커밋해야 함: %q", files)
+	}
+	if st := git("status", "--porcelain", "--", "items"); st != "M items/one.md" {
+		t.Errorf("손으로 고친 항목은 남아야 함: %q", st)
 	}
 	os.Remove(filepath.Join(e.Home, "review", "a--b.json")) // 지운 것도 커밋된다
-	FinishRow(e, ledger.Row{Event: "review", Moment: "y"}, "review: 지움")
-	if st := git("status", "--porcelain", "--", "items", "review"); st != "" || git("log", "-1", "--format=%s") != "review: 지움" {
+	FinishRow(e, ledger.Row{Event: "review", Moment: "keep", Injected: []ledger.Injected{{ID: "one"}}}, "review: 지움")
+	if st := git("status", "--porcelain", "--", "review"); st != "" || git("log", "-1", "--format=%s") != "review: 지움" {
 		t.Errorf("지움이 커밋돼야 함: %q", st)
+	}
+	if files := git("show", "--name-only", "--format=", "HEAD"); files != "review/a--b.json" {
+		t.Errorf("keep 은 항목 파일을 담지 않음: %q", files)
 	}
 	FinishRow(e, ledger.Row{Event: "review", Moment: "z"}, "변경 없음") // 바꾼 것이 없으면 커밋도 오류도 없다
 	if git("log", "-1", "--format=%s") != "review: 지움" || read(e, "ledger/errors.log") != "" {
 		t.Errorf("변경 없음: %q", read(e, "ledger/errors.log"))
+	}
+	// 합치기는 줄에 든 항목 파일(고쳐 쓴 대상)을 담는다.
+	FinishRow(e, ledger.Row{Event: "review", Moment: "merge", Injected: []ledger.Injected{{ID: "one"}}}, "review: 합침")
+	if files := git("show", "--name-only", "--format=", "HEAD"); files != "items/one.md" {
+		t.Errorf("merge 는 대상 항목 파일을 담아야 함: %q", files)
 	}
 }

@@ -347,7 +347,7 @@ func write(e Env, dir string, in Input) error {
 	return err
 }
 
-// finish 는 색인을 다시 만들고, 원장에 한 줄 남기고, 데이터 폴더가 git 저장소면 커밋을 시도한다.
+// finish 는 색인을 다시 만들고, 원장에 한 줄 남기고, 데이터 폴더가 git 저장소면 ids 의 항목 파일과 review 의 변경만 커밋을 시도한다.
 // 모두 실패해도 호출한 일은 성공이다(자동화를 멈추지 않는다).
 func finish(e Env, event, moment, msg string, ids ...string) {
 	row := ledger.Row{Event: event, Moment: moment}
@@ -374,7 +374,7 @@ func Rewrite(e Env, in Input) error {
 	return write(e, "items", in)
 }
 
-// FinishRow 는 색인을 다시 만들고, 원장에 줄을 남기고, 데이터 폴더가 git 저장소이면 items 와 review 를 커밋한다.
+// FinishRow 는 색인을 다시 만들고, 원장에 줄을 남기고, 데이터 폴더가 git 저장소이면 줄이 다룬 항목 파일과 review 의 변경을 커밋한다.
 // row.Event 가 오류 기록의 이벤트 이름이다. 모두 실패해도 호출한 일은 성공이다.
 func FinishRow(e Env, row ledger.Row, msg string) {
 	event := row.Event
@@ -392,31 +392,59 @@ func FinishRow(e Env, row ledger.Row, msg string) {
 	git := func(args ...string) ([]byte, error) {
 		return exec.CommandContext(ctx, "git", append([]string{"-C", e.Home}, args...)...).Output()
 	}
-	// git 은 없는 폴더나 git 이 아는 파일이 없는 폴더를 경로로 받으면 실패하므로, 아는 파일이 있는 폴더만 넘긴다.
-	out, err := git("ls-files", "-z", "-c", "-o", "--exclude-standard", "--", "items", "review")
+	// 이 호출이 다룬 항목의 파일(items/<id>.md)과 검토 목록(review/)에서 바뀐 것만 커밋한다.
+	// 손으로 고쳐 두고 아직 커밋하지 않은 다른 항목 파일이 엉뚱한 메시지의 커밋에 섞이지 않게 하려는 것이다.
+	// review 는 heka 만 쓰는 폴더라 통째로 본다. 없는 경로는 git status 가 무시한다.
+	cand := []string{"review"}
+	for _, id := range itemIDs(row) {
+		cand = append(cand, "items/"+id+".md")
+	}
+	out, err := git(append([]string{"status", "--porcelain", "-z", "--untracked-files=all", "--"}, cand...)...)
 	if err != nil {
-		ledger.LogError(e.Home, event, "git ls-files 실패: "+err.Error(), e.Now)
+		ledger.LogError(e.Home, event, "git status 실패: "+err.Error(), e.Now)
 		return
 	}
-	var dirs []string
-	for _, f := range strings.Split(string(out), "\x00") {
-		if d, _, ok := strings.Cut(f, "/"); ok && !slices.Contains(dirs, d) {
-			dirs = append(dirs, d)
+	paths := changedPaths(out)
+	if len(paths) == 0 {
+		return
+	}
+	for _, args := range [][]string{append([]string{"add", "-A", "--"}, paths...), append([]string{"commit", "-m", msg, "--"}, paths...)} {
+		if _, err := git(args...); err != nil {
+			ledger.LogError(e.Home, event, "git "+args[0]+" 실패: "+err.Error(), e.Now)
+			return
 		}
 	}
-	if len(dirs) == 0 {
-		return
+}
+
+// itemIDs 는 줄이 다룬 항목 파일의 id 다. 등록 판정(register_judge)은 항목 파일을 다루지 않고,
+// 검토 결정(review)은 합치기만 대상 항목 파일을 고친다(은퇴는 Retire 가 따로 커밋한다).
+func itemIDs(row ledger.Row) []string {
+	if row.Event == "register_judge" || (row.Event == "review" && row.Moment != "merge") {
+		return nil
 	}
-	if _, err := git(append([]string{"add", "-A", "--"}, dirs...)...); err != nil {
-		ledger.LogError(e.Home, event, "git add 실패: "+err.Error(), e.Now)
-		return
+	var ids []string
+	for _, in := range row.Injected {
+		ids = append(ids, in.ID)
 	}
-	if _, err := git(append([]string{"diff", "--cached", "--quiet", "--"}, dirs...)...); err == nil {
-		return // 커밋할 변경이 없다
+	return ids
+}
+
+// changedPaths 는 git status --porcelain -z 출력에서 바뀐 경로를 뽑는다.
+// 이름 바꾸기·복사 줄 뒤에 붙는 원래 경로는 건너뛴다.
+func changedPaths(out []byte) []string {
+	var paths []string
+	fields := strings.Split(string(out), "\x00")
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
+		if len(f) < 4 {
+			continue
+		}
+		paths = append(paths, f[3:])
+		if f[0] == 'R' || f[0] == 'C' {
+			i++
+		}
 	}
-	if _, err := git(append([]string{"commit", "-m", msg, "--"}, dirs...)...); err != nil {
-		ledger.LogError(e.Home, event, "git commit 실패: "+err.Error(), e.Now)
-	}
+	return paths
 }
 
 // Retire 는 항목 파일(items/<id>.md)을 지우고 색인을 다시 만들고 원장에 한 줄(이벤트 retire, 사유) 남긴다.
