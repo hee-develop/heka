@@ -57,7 +57,7 @@ type contentPart struct {
 type askResult struct {
 	Questions []struct {
 		Question    string `json:"question"`
-		MultiSelect *bool  `json:"multiSelect"` // 없으면 답을 어떻게 이었는지 알 수 없어 읽지 않는다
+		MultiSelect *bool  `json:"multiSelect"` // 없으면 답을 어떻게 이었는지 알 수 없어 답은 읽지 않는다(메모는 읽는다)
 		Options     []struct {
 			Label string `json:"label"`
 		} `json:"options"`
@@ -215,17 +215,20 @@ func askAnswers(raw json.RawMessage) []string {
 	var out []string
 	done := map[string]bool{} // answers 는 질문 글이 키라 같은 질문 글은 한 번만 읽는다
 	for _, q := range res.Questions {
-		if done[q.Question] || q.MultiSelect == nil {
+		if done[q.Question] {
 			continue
 		}
 		done[q.Question] = true
 		var one string
 		var many []string
-		if a := res.Answers[q.Question]; json.Unmarshal(a, &one) == nil {
+		a := res.Answers[q.Question]
+		switch {
+		case q.MultiSelect == nil:
+		case json.Unmarshal(a, &one) == nil:
 			if t := typedAnswer(one, labels, *q.MultiSelect); t != "" {
 				out = append(out, t)
 			}
-		} else if json.Unmarshal(a, &many) == nil {
+		case json.Unmarshal(a, &many) == nil:
 			for _, m := range many {
 				if m != "" && !labels[m] {
 					out = append(out, m)
@@ -247,12 +250,19 @@ func askAnswers(raw json.RawMessage) []string {
 // 여러 개를 고르는 질문의 답은 고른 라벨들 뒤에 직접 친 글 한 칸을 ", " 로 이은 것이고, 쉼표가 든 칸은 큰따옴표로 감싼다.
 // 그래서 칸으로 나눈 뒤 앞의 라벨 칸을 떼고, 남은 칸이 꼭 하나일 때만 그 칸을 돌려준다.
 // 나눌 수 없거나 남은 칸이 여럿이면 형식을 잘못 읽은 것이라, AI 가 쓴 라벨이 섞이지 않도록 아무것도 돌려주지 않는다.
+// 칸 안의 큰따옴표를 어떻게 적는지는 세션 기록에서 확인하지 못했다. 그래서 큰따옴표가 든 라벨이 하나라도 있으면
+// 라벨이 칸 여러 개로 잘못 나뉠 수 있어 답을 읽지 않는다.
 func typedAnswer(ans string, labels map[string]bool, multi bool) string {
 	if labels[ans] {
 		return ""
 	}
 	if !multi {
 		return ans
+	}
+	for l := range labels {
+		if strings.Contains(l, `"`) {
+			return ""
+		}
 	}
 	cells, ok := splitCells(ans)
 	if !ok {
@@ -268,7 +278,7 @@ func typedAnswer(ans string, labels map[string]bool, multi bool) string {
 }
 
 // splitCells 는 여러 개를 고른 답을 칸으로 나눈다. 칸은 ", " 로 이어지고, 큰따옴표로 시작하는 칸은
-// 닫는 큰따옴표까지이며 그 안의 "" 는 " 하나로 읽는다. 감싼 칸이 닫히지 않거나 칸 사이가 ", " 가 아니면 ok 는 거짓이다.
+// 닫는 큰따옴표까지이며 그 안의 "" 는 " 하나로 읽는다(직접 친 글에 큰따옴표가 있을 때를 위한 가정이다). 감싼 칸이 닫히지 않거나 칸 사이가 ", " 가 아니면 ok 는 거짓이다.
 func splitCells(s string) (cells []string, ok bool) {
 	const sep = ", "
 	for {

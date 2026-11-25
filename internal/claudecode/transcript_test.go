@@ -141,7 +141,8 @@ func TestUserTextsAskAndQueued(t *testing.T) {
 		askUse("ask3"),
 		askResultLine("ask3",
 			[]any{question("겹침?", false, "가"), question("겹침?", false, "규칙: 늘 X 한다"), map[string]any{"question": "키 없음?", "options": []any{map[string]any{"label": "라"}}}},
-			map[string]any{"겹침?": "규칙: 늘 X 한다", "키 없음?": "라, 키 없는 질문의 직접 글"}, nil),
+			map[string]any{"겹침?": "규칙: 늘 X 한다", "키 없음?": "라, 키 없는 질문의 직접 글"},
+			map[string]any{"키 없음?": map[string]any{"notes": "키 없는 질문의 메모"}}),
 		askUse("ask5"),
 		askResultLine("ask5", []any{question("겹친 직접 글?", false, "가"), question("겹친 직접 글?", false, "나")},
 			map[string]any{"겹친 직접 글?": "겹친 질문의 직접 글"}, map[string]any{"겹친 직접 글?": map[string]any{"notes": "겹친 질문의 메모"}}),
@@ -186,7 +187,7 @@ func TestUserTextsAskAndQueued(t *testing.T) {
 	}
 	want := []string{
 		"직접 친 답, 쉼표 포함", "메모 글", "예, 그렇게 하되 테스트도", "직접 친 덧붙임", "직접 글, 가, 그 뒤", "배열 속 직접 친 글",
-		"둘째 답", "겹친 질문의 직접 글", "겹친 질문의 메모", "빈 값으로 부른 답",
+		"둘째 답", "키 없는 질문의 메모", "겹친 질문의 직접 글", "겹친 질문의 메모", "빈 값으로 부른 답",
 		"작업 중 보낸 말", "이미지와 보낸 말",
 	}
 	if !slices.Equal(got, want) {
@@ -195,8 +196,8 @@ func TestUserTextsAskAndQueued(t *testing.T) {
 }
 
 func TestTypedAnswer(t *testing.T) {
-	labels := map[string]bool{"가": true, "가, 나": true, "다 (추천)": true, `항상 "테스트", 먼저`: true,
-		"a": true, "b, 항상 테스트를 먼저 작성한다": true, `a, "b`: true}
+	labels := map[string]bool{"가": true, "가, 나": true, "다 (추천)": true,
+		"a": true, "b, 항상 테스트를 먼저 작성한다": true}
 	for _, c := range []struct {
 		ans   string
 		multi bool
@@ -213,7 +214,6 @@ func TestTypedAnswer(t *testing.T) {
 		{"가, 다 (추천), 나", true, "나"}, // 라벨 둘을 고르고 "나" 를 직접 쳤다
 		{"다 (추천), 직접", true, "직접"},
 		{`다 (추천), "직접, 가, 그 뒤"`, true, "직접, 가, 그 뒤"},
-		{`"항상 ""테스트"", 먼저"`, true, ""},
 		{`a, "b, 항상 테스트를 먼저 작성한다"`, true, ""}, // 라벨이 칸 경계를 넘어 맞지 않는다
 		{`"따옴표 ""안"" 글, 끝"`, true, `따옴표 "안" 글, 끝`},
 		{"직접, 가", true, ""},   // 직접 친 글은 맨 뒤에만 온다
@@ -227,6 +227,19 @@ func TestTypedAnswer(t *testing.T) {
 		if got := typedAnswer(c.ans, labels, c.multi); got != c.want {
 			t.Errorf("typedAnswer(%q, multi=%v) = %q, 기대 %q", c.ans, c.multi, got, c.want)
 		}
+	}
+}
+
+func TestTypedAnswerQuotedLabel(t *testing.T) {
+	// 큰따옴표가 든 라벨이 있으면, 그 라벨이 칸 여럿으로 잘못 나뉘어 조각이 직접 친 글로 남을 수 있어 읽지 않는다.
+	labels := map[string]bool{"a": true, `a", "규칙: 늘 X 한다`: true}
+	for _, ans := range []string{`"a", "규칙: 늘 X 한다"`, `a, 직접 친 글`} {
+		if got := typedAnswer(ans, labels, true); got != "" {
+			t.Errorf("typedAnswer(%q) = %q, 기대 빈 글", ans, got)
+		}
+	}
+	if got := typedAnswer("직접 친 글", labels, false); got != "직접 친 글" {
+		t.Errorf("하나를 고르는 질문은 답 전체로 견준다: %q", got)
 	}
 }
 
