@@ -17,12 +17,14 @@ const usage = `사용법: heka <명령>
   select    순간 하나에 넣을 항목을 골라 JSON 으로 출력한다
   resolve   도구 호출 하나를 동작 이름으로 해석해 JSON 으로 출력한다
   find      항목을 찾는다 (낱말 또는 작업을 설명한 문장, --json 지원)
-  add       항목을 등록한다 (비슷한 항목이 있으면 대기함)
-  pending   대기함을 보고 결정한다 (fix|replace|keep|drop)
+  add       항목을 등록한다 (비슷한 항목이 있어도 등록하고, 같은 id 만 거절한다. 후보가 있으면 뒤에서 판정을 띄운다)
+  judge-add 등록한 항목 하나를 비슷한 후보와 견주어 판정한다 (heka judge-add <id>, 등록이 띄운다)
+  review    판정이 올린 검토 목록을 보고 결정한다 (--json [--all], apply <id> <merge|keep|drop-new|drop-old>, --notify)
   why       원장의 최근 주입을 사람이 읽는 꼴로 보인다 (--session, --last, --id, --json)
   list      항목 목록 (--json, --agent, --must, --flagged, --find-only, --violated)
   stats     항목 하나의 주입·탈락·검사에 걸림·flag 횟수 (--json)
   judge-stats  원장의 판정 시간 분포와 상한별로 잘릴 판정 수 (--json, --since YYYY-MM-DD)
+  gui       원장과 항목을 보는 읽기 전용 화면을 로컬 서버로 연다 (--port, --open)
   replay    기록해 둔 순간들을 선별기에 다시 넣어 전달·정밀도·침묵을 잰다 (--runs, --no-judge, --parallel, --json, --out, --min-*)
   retire    항목을 지우고 색인과 원장을 갱신한다 (--reason 필수)
   mcp       MCP 서버를 표준 입출력으로 실행한다
@@ -55,8 +57,10 @@ func runIn(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runFind(args[1:], stdout, stderr)
 	case "add":
 		return runAdd(args[1:], stdout, stderr)
-	case "pending":
-		return runPending(args[1:], stdout, stderr)
+	case "judge-add":
+		return runJudgeAdd(args[1:], stdout, stderr)
+	case "review":
+		return runReview(args[1:], stdin, stdout, stderr)
 	case "why":
 		return runWhy(args[1:], stdout, stderr)
 	case "list":
@@ -65,6 +69,8 @@ func runIn(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runStats(args[1:], stdout, stderr)
 	case "judge-stats":
 		return runJudgeStats(args[1:], stdout, stderr)
+	case "gui":
+		return runGUI(args[1:], stdout, stderr)
 	case "replay":
 		return runReplay(args[1:], stdout, stderr)
 	case "retire":

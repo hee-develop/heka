@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>heka 관찰 화면</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header id="head">
+  <div class="head-top">
+    <h1>heka 관찰 화면</h1>
+    <span class="home" id="h-home"></span>
+    <span class="ro">읽기 전용</span>
+  </div>
+  <div class="head-stats" id="h-stats"></div>
+  <div class="head-bar">
+    <nav id="tabs">
+      <a href="#/" data-tab="overview">구조도</a>
+      <a href="#/sessions" data-tab="sessions">세션</a>
+      <a href="#/items" data-tab="items">항목</a>
+    </nav>
+    <div class="range" id="range">
+      <button type="button" data-r="today">오늘</button>
+      <button type="button" data-r="7d">7일</button>
+      <button type="button" data-r="30d">30일</button>
+      <button type="button" data-r="all">전체</button>
+      <button type="button" id="refresh" class="refresh">새로 고침</button>
+    </div>
+  </div>
+  <p class="note">시각은 이 브라우저의 지역 시간으로 보이고, 기간은 UTC 날짜 기준입니다.</p>
+</header>
+<main id="view" aria-live="polite">불러오는 중...</main>
+<noscript>이 화면은 JavaScript 가 필요합니다.</noscript>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -10,9 +10,12 @@ heka는 AI 에이전트가 일하는 각 순간에, 그 순간에 필요한 컨�
 - `heka select`: 순간 하나에 넣을 항목을 골라 JSON 으로 보여 줍니다.
 - `heka resolve`: 도구 호출 하나를 동작 이름으로 바꿔 보여 줍니다.
 - `heka find`: 항목을 찾습니다(낱말 나열도, 작업을 설명한 문장도 됩니다).
-- `heka add`, `heka pending`: 항목을 등록하고, 비슷한 항목이 있어 대기함에 든 것을 결정합니다.
+- `heka add`: 항목을 등록합니다. 비슷한 항목이 있어도 바로 등록하고(같은 id 만 거절), 후보가 있으면 뒤에서 모델이 판정합니다.
+- `heka judge-add <id>`: 등록한 항목 하나를 비슷한 후보와 견주어 판정합니다. 등록이 떨어진 프로세스로 띄우며 보통 사람이 부르지 않습니다.
+- `heka review`: 판정이 올린 검토 목록을 보고 결정하며, `--json`·`apply`·`--notify` 가 있습니다(아래 "검토: heka review").
 - `heka why`, `heka list`, `heka stats`, `heka retire`: 원장과 항목을 들여다보고 항목을 은퇴시킵니다(아래 "원장과 항목 보기").
 - `heka judge-stats`: 원장에 남은 판정 시간을 모아 분포와 상한별로 잘릴 판정 수를 보입니다.
+- `heka gui`: 원장과 항목을 보는 읽기 전용 화면을 로컬 서버로 엽니다(아래 "화면: heka gui").
 - `heka replay`: 기록해 둔 순간들을 선별기에 다시 넣어 전달·정밀도·침묵을 잽니다(아래 "재현: heka replay").
 - `heka mcp`: 조회·등록·표시를 위한 MCP 서버입니다(표준 입출력).
 - `heka hook`: Claude Code 훅 연결부입니다. 표준 입력의 훅 JSON 을 처리해 표준 출력에 JSON 을 냅니다. `--print-settings` 는 설정 파일의 `hooks` 에 넣을 JSON 조각을 출력하며(`--shadow` 를 더하면 그림자 방식용), 설정 파일을 직접 고치지는 않습니다.
@@ -121,7 +124,7 @@ heka find [--scope S]... [--budget N] [--limit K] [--json] <질의…>
 
 `when` 은 항목의 조건(`moment`, `action`, `path`, `repo`, `agent` 중 있는 것)이고, `body_omitted` 는 예산 때문에 본문을 뺀 항목에만 있습니다. `score` 는 낱말 점수(0~1)입니다.
 
-## 등록: heka add, heka pending
+## 등록: heka add
 
 ```sh
 heka add --id release-check --text '배포 점검표는 릴리스 전에 확인한다.' \
@@ -131,20 +134,39 @@ heka add --file <항목 파일> [--checked]
 
 플래그는 `--id --text --must --moment --action --path --repo --agent --about --scope --source --quote --expires --confirm --body` 이고 목록 필드는 여러 번 쓸 수 있습니다. `--checked` 는 사람이 직접 확인했다는 뜻으로 오늘 날짜를 `checked` 에 넣습니다(MCP 로는 받지 않습니다). `--file` 로 읽은 파일의 `checked` 는 무시합니다.
 
-- 검증은 `heka index --check` 와 같은 규칙입니다. error 가 있으면 등록하지 않고 문제 목록을 냅니다.
+- 검증은 `heka index --check` 와 같은 규칙입니다. error 가 있으면 등록하지 않고 문제 목록을 냅니다. `items/<id>.md` 가 이미 있으면 등록하지 않고 "같은 id 의 항목 <id> 가 이미 있음. 파일을 직접 고치거나 다른 id 를 쓰세요" 를 냅니다.
 - `source: user` 이고 `quote` 가 있으면, 최근 24시간 안에 고쳐진 세션 상태 파일에 적힌 세션 기록 파일을 읽어 **사용자가 친 글**과 공백을 정규화해 대조합니다. 사용자가 친 글에는 일반 메시지 말고도 `AskUserQuestion` 에 직접 친 답과 메모, 작업 도중 보낸 메시지(`queued_command` 첨부 가운데 `origin.kind` 가 `human` 이고 `commandMode` 가 `prompt` 인 것)가 들어갑니다. AI 가 `answers`·`annotations` 를 미리 채워 부른 `AskUserQuestion` 의 결과와, 질문을 거절하며 친 글은 읽지 않습니다. AI 의 글, 고른 선택지의 라벨(AI 가 쓴 글), `AskUserQuestion` 이 아닌 도구의 결과(`tool_result`), 다른 세션·에이전트가 보낸 메시지, 도구가 만든 프롬프트(`tool_prompt_prefixes`), `origin.kind` 가 `human` 이 아니거나 `promptSource` 가 `typed`·`queued`·`sdk` 가 아닌 user 줄(에이전트 결과 알림, 제안된 문장을 수락한 것 등), `<local-command`·`<system-reminder>`·`<task-notification` 로 시작하는 글, `<bash-stdout`·`<bash-stderr`·`<artifact-content-authored-by-others` 가 나온 자리부터 끝, 슬래시 명령 줄에서 `<command-args>` 밖의 글, 사용자가 붙여넣은 글 블록(`<pasted_content …>`, 블록 앞뒤의 글은 이어 붙이지 않고 따로 대조합니다), 대화 압축 요약(`isCompactSummary`), `isMeta`·`isSidechain` 줄은 인용으로 인정하지 않습니다. 다만 `AskUserQuestion` 의 답을 훅이나 SDK 의 권한 콜백이 대신 채웠는지는 기록으로 가릴 수 없어, 그런 답도 사용자가 친 글로 봅니다. 기록 파일 읽기는 `internal/claudecode` 가 맡고(Claude Code 형식), 설정의 `claude_code.transcripts` 에 glob 목록을 주면 같은 형식의 다른 기록(최근 24시간 안에 고쳐진 것)도 봅니다. 기록 파일이 없거나 못 읽으면 그 파일은 건너뜁니다. 확인되지 않으면 `quote` 를 비우고 본문 끝에 `확인되지 않은 인용: "..."` 을 적어 등록하며, 사람이 확인(`checked`)하기 전에는 주입되지 않습니다.
-- 비슷한 항목이 있으면 `items/_pending/<id>.md` 에 두고 후보를 알립니다. 비슷함은 (a) 범위와 `when.action` 이 겹침, (b) 주제어가 같음, (c) 새 항목의 `text` 를 질의로 한 낱말 점수가 0.5 이상(잠정), (d) 같은 id 입니다. 대기함의 항목은 주입되지 않습니다. 없으면 `items/<id>.md` 로 쓰고 색인을 다시 만듭니다.
-- 파일은 임시 파일에 쓴 뒤 이름을 바꿉니다. `$HEKA_HOME` 에 `.git` 이 있으면 쓴 뒤 `git add`·`git commit`(`add: <id>`)을 시도하고, 실패해도 등록은 성공입니다.
+- 그 밖에는 언제나 `items/<id>.md` 로 쓰고 색인을 다시 만듭니다. 비슷한 항목이 있어도 막지 않고, 대기함은 없습니다.
+- 비슷한 후보는 (a) 범위와 `when.action` 이 함께 겹침, (b) 주제어가 같음, (c) 새 항목의 `text` 를 질의로 한 낱말 점수가 0.5 이상(잠정) 중 하나라도 맞는 기존 항목입니다. 범위·동작이 겹친 것을 먼저, 그다음 낱말 점수 내림차순, 같으면 id 순으로 최대 `register_judge.candidates`(기본 5)건입니다. 후보가 있으면 응답에 "비슷한 후보 N건은 뒤에서 판정합니다. 사용자에게 물을 필요는 없습니다." 와 후보 목록이 붙고, `heka judge-add <id>` 를 떨어진 프로세스(새 세션, 표준 입출력은 `/dev/null`)로 띄우며 기다리지 않습니다. 띄우기에 실패해도 등록은 성공이고 `errors.log` 에만 남습니다.
+- 파일은 임시 파일에 쓴 뒤 이름을 바꿉니다. `$HEKA_HOME` 에 `.git` 이 있으면 쓴 뒤 `git add`·`git commit`(`add: <id>`)을 시도하고, 실패해도 등록은 성공입니다. 커밋에는 그 호출이 다룬 항목 파일(`items/<id>.md`)과 `review/` 에서 바뀐 파일만 담습니다. 손으로 고쳐 두고 커밋하지 않은 다른 항목은 섞이지 않습니다(판정은 `review/` 파일만, 합치기는 대상 항목과 `review/`).
+
+## 등록 판정: heka judge-add
+
+설정의 `register_judge.command` 에 새 항목과 후보를 표준 입력으로 넘기고 후보마다 `separate|merge|conflict|stale` 답을 받습니다. 입력은 `register_judge.instruction`(비면 코드 안의 기본 지시문), `[새 항목]`, `[후보 1]` … 블록을 빈 줄 하나로 이은 글이고, 블록은 `id`, 출처, 범위, 필수, 조건, 주제어, 주입문, 본문(1500자까지, 넘으면 `…(생략)`)입니다. 답은 `{"verdicts":[{"id","verdict","reason","merged":{"text","body","about":[]}}]}` 이고, 코드 울타리나 앞뒤 글이 섞여도 첫 `{` 부터 짝이 맞는 `}` 까지를 읽습니다.
+
+- separate 는 원장에만 남깁니다. merge 는 검토 항목(합친 초안 포함), conflict 는 검토 항목을 만들고 곧바로 알림 명령을 부릅니다(한 번의 판정에서 모순이 여러 건이어도 알림은 한 번이고 건수를 적습니다).
+- stale(낡음: 새 항목이 무엇을 없애거나 바꿨다는데 후보가 그 옛 상태를 지금도 유효한 것처럼 지시함)은 검토 항목(kind stale)을 만들고 옛 항목(후보)에 `heka_flag` 와 같은 표시(사유 `등록 판정: <새 항목> 기준으로 낡음 — <이유>`)를 원장에 남깁니다. 알리지 않습니다(2026-11-25 사용자 결정).
+- merge 의 합친 초안은 기계로 검사합니다. 두 원본 본문의 `## ` 머리 줄이 초안 본문에 모두 있어야 하고, 초안 본문 길이(글자)가 두 원본 중 긴 쪽의 70% 이상이어야 합니다(두 본문이 다 비면 검사하지 않음). 어기면 검토 항목은 merge 로 만들되 초안을 비우고 `draft_problem`(원장의 판정 줄에도 남음)에 까닭을 적으며, 터미널의 `m` 은 보이지 않고 세션 스킬이 초안을 새로 씁니다.
+- 명령이 없거나, 오류·시간 초과(`register_judge.timeout`, 기본 120초)·읽지 못한 답이면 검토 항목 하나(미판정, 후보 id 목록 포함)를 올립니다. 후보에 없는 id 와 모르는 verdict 는 버리고, 답이 없는 후보는 미판정입니다.
+- 항목 파일은 고치거나 지우지 않습니다. 쓰는 것은 `review/` 와 원장(`event: register_judge`: 새 항목 id, 후보별 답과 이유, 걸린 시간, 오류·시간 초과)뿐이라, 검토 전에는 합치기·모순으로 판정된 두 항목이 함께 주입됩니다.
+
+## 검토: heka review
 
 ```sh
-heka pending                                  # 대기함 목록과 비슷한 항목
-heka pending fix <대기 id> <기존 id>          # 기존 항목의 내용을 새 내용으로 고침(id 는 기존 것)
-heka pending replace <대기 id> <기존 id>      # 기존 항목 파일을 지우고 새 항목을 등록
-heka pending keep <대기 id> --reason <글>     # 다른 항목이라는 이유를 본문 끝에 적고 등록
-heka pending drop <대기 id>                   # 대기함에서 지움
+heka review --json [--all]       # 검토 목록(한 번에 review.batch 건, --all 이면 전부). 양쪽 항목의 필드를 함께 냅니다
+heka review                      # 터미널에서 한 건씩 보고 키로 결정합니다(터미널이 아니면 --json 을 안내하고 끝)
+heka review apply <entry-id> <merge|keep|drop-new|drop-old> [--reason 글] [--text 글] [--body-file 파일] [--about a,b]
+heka review --notify             # 주 1회 표본을 올리고, 기준을 넘으면 알림 명령을 부릅니다
 ```
 
-결정마다 색인을 다시 만들고 원장에 한 줄 남깁니다.
+`--json` 의 각 건에는 두 항목에서 값이 다른 머리말 필드와 양쪽 값(`header_diff`)이 함께 나오고 터미널 화면에도 한 줄로 보입니다(합치면 새 항목 쪽 값이 사라지므로).
+
+검토 항목은 `$HEKA_HOME/review/<entry-id>.json` 입니다(`<새>--<대상>` 또는 `<새>--unjudged`). 순서는 모순, 낡음, 합치기, 미판정, 표본이고 같으면 오래된 것이 먼저입니다. 새 항목이나 대상 항목 파일이 이미 없는 항목은 목록에서 빼고 지우며 원장에 남깁니다.
+
+- `merge`: 대상 항목(id 유지)을 다시 씁니다. 초안의 본문이 비고 `--body-file` 도 없으면 대상 본문과 새 항목 본문을 이어 쓰고, 초안 주제어가 비면 두 항목 주제어의 합집합을 씁니다. 검사(`check`)는 대상 것을 쓰되 대상에 없고 새 항목에 있으면 새 항목 것을 쓰며, 둘 다 있고 다르면 합치기를 거절합니다. 주입문·본문·주제어는 초안(플래그가 있으면 플래그 값), 조건·필수·범위·확인·검사·기한·`checked` 는 대상 항목 것입니다. 출처와 인용은 두 항목 중 더 믿을 만한 쪽(`user` > `doc` > `ai`, 같으면 대상 쪽)을 쓰고, 다른 쪽의 출처와 인용은 본문 끝에 `합친 항목 <id>: 출처 <s>, 인용 "<q>"` 로 남깁니다. 합친 결과가 검증을 통과하지 못하면 아무것도 바꾸지 않고 오류이며, 통과하면 새 항목은 은퇴합니다(사유 `합침: <대상> 에 합침`).
+- `keep` 은 검토 항목만 지우고 원장에 사유(기본 "따로 두기")를 남깁니다. `drop-new`·`drop-old` 는 새 항목·대상 항목을 `heka retire` 와 같은 처리로 은퇴시킵니다. 은퇴한 항목을 가리키는 다른 검토 항목도 지웁니다. 결정마다 원장에 `event: review` 한 줄이 남습니다.
+- 터미널 키: 낡음은 `o` 옛 것 버리기, `k`, `n`, `s`, `q`(합치기는 거절합니다). 모순·합치기·표본은 `m` 합치기(초안이 있을 때만), `k` 따로 두기, `n` 새 것 버리기, `o` 옛 것 버리기, `s` 건너뛰기, `q` 끝. 미판정은 `j` 다시 판정(그 자리에서 `judge-add` 를 동기로 실행), `k`, `n`, `s`, `q`.
+- `--notify`: 마지막 표본이 7일을 넘었거나 없으면, 지난 7일 원장에서 `separate` 로 판정된 쌍 중 두 항목이 다 있고 아직 검토 항목이 아닌 것을 `review.sample`(기본 3)건 무작위로 올립니다. 검토 대기가 `review.notify_min`(기본 5)건 이상이거나 가장 오래된 것이 `review.notify_days`(기본 7)일 이상이면 `review.notify_command` 에 알림 글을 마지막 인자로 덧붙여 부르고, 명령이 비어 있으면 표준 출력에만 씁니다.
 
 ## 원장과 항목 보기: heka why, list, stats, retire
 
@@ -163,6 +185,26 @@ heka retire <id> --reason <글>
 - `list`: 항목의 id, 필수 여부, 조건(`when`), 범위, 확인 날짜, 기한. `--agent` 는 `when.agent` 에 그 종류가 걸린 항목, `--flagged` 는 원장에 `flag` 가 남은 항목만, `--violated N` 은 검사에 걸린 횟수와 `flag` 횟수의 합이 N 이상인 항목만 보입니다. 검증에 실패한 항목은 빼고 알립니다.
 - `stats`: 주입 횟수, 마지막 주입 시각, 예산·중복·판정으로 빠진 횟수, 결과물 검사에 걸린 횟수, `flag` 횟수와 마지막 사유. 훅의 줄만 셉니다(조회·등록 줄은 세지 않습니다).
 - `retire`: 항목 파일을 지우고 색인을 다시 만들고 원장에 `retire` 한 줄(사유 포함)을 남깁니다. `$HEKA_HOME` 에 `.git` 이 있으면 사유를 메시지로 커밋을 시도하며, 실패해도 성공입니다.
+
+## 화면: heka gui
+
+```sh
+heka gui [--port N] [--open]
+```
+
+원장과 항목을 브라우저에서 보는 읽기 전용 화면입니다. 시작하면 표준 출력에 `http://127.0.0.1:<포트>/` 한 줄을 내고, `Ctrl-C`(SIGINT)나 SIGTERM 에는 정상 종료합니다. 포트를 잡지 못하면 사유를 표준 오류에 내고 종료 코드 1, 잘못된 플래그는 2 입니다.
+
+- `--port`: 기본 7788 입니다. 0 이면 빈 포트를 고릅니다. 주소는 늘 `127.0.0.1` 이고, 다른 주소에 묶는 옵션은 없습니다. 인증이 없는 화면이라서입니다.
+- `--open`: 브라우저로 엽니다(macOS 는 `open`, 그 밖은 `xdg-open`). 열지 못해도 서버는 계속 돕니다.
+
+읽기 전용입니다. GET·HEAD 만 받고 그 밖의 메서드는 405 이며, 원장·항목·설정 어디에도 쓰지 않습니다. `Host` 머리말이 `127.0.0.1`, `localhost`, `[::1]` 가 아니면 403 으로 막고(DNS 리바인딩 방지), CORS 머리말은 내지 않습니다. 요청마다 원장과 항목을 새로 읽으며(캐시 없음), 파일이 없거나 깨져 있으면 빈 값으로 답합니다. 화면 자산은 실행 파일에 들어 있습니다.
+
+보여 주는 것은 JSON API 로 가져옵니다(전부 `application/json; charset=utf-8`). `since`·`until` 은 UTC 날짜 `YYYY-MM-DD` 이며 양끝을 포함하고, 틀리면 400 입니다.
+
+- `GET /api/meta`: 버전, 데이터 폴더, 항목 수(전체·넣는 것·조회 전용·필수)와 검토 대기 건수(`items.review`, 읽기만 하며 지워진 항목을 가리키는 것은 세지 않음), 원장 줄 수와 처음·마지막 시각, `errors.log` 줄 수, 그림자 방식 여부.
+- `GET /api/overview?since=&until=`: 훅의 줄을 순간(세션 시작·프롬프트·도구 호출·서브에이전트 시작·턴 종료)별로 모은 것. 줄 수, 넣은 항목 수와 토큰, 단계별 탈락 수, 시킨·하지 말라 한 동작, 확인 요구, 검사 결과, 판정과 모델 후보 요약, 걸린 시간 분포, 많이 넣은 항목 5건. 훅이 아닌 줄(조회·등록·표시 등)은 이벤트별로 셉니다.
+- `GET /api/sessions?since=&until=&limit=`: 세션 목록(마지막 시각 내림차순, `limit` 기본 100·최대 1000). `GET /api/sessions/<id>`: 그 세션의 원장 줄(시각 오름차순)과 줄에 나온 항목의 지금 글.
+- `GET /api/items`: 항목 목록과 원장에서 센 횟수(넣음·탈락·검사에 걸림·표시). `GET /api/items/<id>`: 본문, 단계별 탈락 수, 이 항목이 나온 최근 줄 30건. 횟수를 세는 규칙은 `heka stats` 와 같습니다(훅의 줄만, 탈락은 예산·중복·판정만).
 
 ## 재현: heka replay
 
@@ -203,13 +245,12 @@ HEKA_HOME=/tmp/heka-replay heka replay internal/replay/testdata/cases.jsonl --no
 
 ## MCP 서버: heka mcp
 
-표준 입출력으로 JSON-RPC 2.0 메시지를 한 줄에 하나씩 주고받습니다. 도구는 넷입니다.
+표준 입출력으로 JSON-RPC 2.0 메시지를 한 줄에 하나씩 주고받습니다. 도구는 셋입니다. 검토 도구는 두지 않습니다(검토는 사람이 시작하는 일입니다).
 
 | 도구 | 쓰임 |
 |---|---|
 | `heka_find` | `query`(필수), `scopes`, `budget`. 저장소·팀·개인의 규칙이나 용어를 모를 때 답하기 전에 찾습니다. |
-| `heka_add` | 등록 입력 필드(`checked` 제외). 등록됨, 대기함(후보와 "사용자에게 물어 달라"는 안내), 검증 문제를 돌려줍니다. |
-| `heka_pending` | `action`(list\|fix\|replace\|keep\|drop), `id`, `target`, `reason`. |
+| `heka_add` | 등록 입력 필드(`checked` 제외). 등록됨(비슷한 후보가 있으면 후보 목록과 "뒤에서 판정하니 사용자에게 물을 필요는 없다"는 안내), 검증 문제(같은 id 포함)를 돌려줍니다. |
 | `heka_flag` | `id`, `reason`. 틀렸거나 낡았다는 표시를 원장에 남깁니다(`event: flag`). 항목 파일은 고치지 않습니다. |
 
 도구 호출이 실패하면 서버는 죽지 않고 `isError: true` 결과를 돌려줍니다. 요청마다 색인이 낡았는지 보고 다시 엽니다. 서버의 작업 폴더가 `heka_find` 의 기본 범위를 정합니다.

@@ -326,27 +326,35 @@ func TestRetireCommitsInGitHome(t *testing.T) {
 	}
 }
 
+func read(e Env, rel string) string {
+	b, _ := os.ReadFile(filepath.Join(e.Home, rel))
+	return string(b)
+}
+
+// spawnRecorder 는 judge-add 를 띄우는 자리를 기록으로 바꾼다.
+func spawnRecorder(e *Env) *[]string {
+	var calls []string
+	e.Spawn = func(id string) error { calls = append(calls, id); return nil }
+	return &calls
+}
+
 func TestSimilarKinds(t *testing.T) {
 	cases := []struct {
 		name   string
 		mutate func(*Input)
 		reason string
 	}{
-		{"같은 id", func(in *Input) { in.Text = "전혀 다른 글 하나"; in.About = []string{"다른 주제"} }, "같은 id"},
 		{"범위와 동작", func(in *Input) {
-			in.ID = "second"
 			in.Text = "전혀 다른 글 하나"
 			in.About = []string{"다른 주제"}
 			in.When.Action = item.List{"git.push"}
 		}, "동작(git.push)이 겹침"},
 		{"주제어", func(in *Input) {
-			in.ID = "second"
 			in.Text = "전혀 다른 글 하나"
 			in.About = []string{"푸시  규칙"}
 			in.When.Action = nil
 		}, "주제어가 같음"},
 		{"낱말", func(in *Input) {
-			in.ID = "second"
 			in.About = []string{"다른 주제"}
 			in.When.Action = nil
 			in.Text = "푸시하기 전에 테스트를 먼저 돌린다."
@@ -355,104 +363,104 @@ func TestSimilarKinds(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			e := newEnv(t)
+			calls := spawnRecorder(&e)
 			first := Input{ID: "first", Text: "푸시하기 전에 테스트를 먼저 돌린다.", About: []string{"푸시 규칙"}, Scope: []string{"personal"},
 				Source: "doc", When: item.When{Action: item.List{"git.push"}}}
 			mustAdd(t, e, first, "added")
-			in := first
-			in.Scope = []string{"personal"}
-			c.mutate(&in)
-			if c.name == "같은 id" {
-				in.When.Action = nil
+			if len(*calls) != 0 {
+				t.Fatalf("후보가 없으면 판정을 띄우지 않음: %v", *calls)
 			}
-			r := mustAdd(t, e, in, "pending")
+			in := first
+			in.ID = "second"
+			c.mutate(&in)
+			r := mustAdd(t, e, in, "added")
 			if len(r.Candidates) != 1 || r.Candidates[0].ID != "first" || !strings.Contains(r.Candidates[0].Reason, c.reason) {
 				t.Fatalf("후보 = %+v", r.Candidates)
 			}
-			if !strings.Contains(r.Text(), "고치기·바꾸기·따로 두기") {
-				t.Error("사용자에게 물어 달라는 안내가 있어야 함")
+			if txt := r.Text(); !strings.Contains(txt, "등록했습니다: second") || !strings.Contains(txt, "비슷한 후보 1건은 뒤에서 판정합니다. 사용자에게 물을 필요는 없습니다.") ||
+				!strings.Contains(txt, "- first: 푸시하기 전에 테스트를 먼저 돌린다. (") || strings.Contains(txt, "물어 주세요") {
+				t.Errorf("응답 글:\n%s", txt)
 			}
-			if !exists(e, "items/_pending/"+in.ID+".md") {
-				t.Error("대기함에 있어야 함")
+			if !exists(e, "items/second.md") || exists(e, "items/_pending") {
+				t.Error("언제나 items 에 써야 함")
 			}
-			if c.name != "같은 id" && exists(e, "items/"+in.ID+".md") {
-				t.Error("items 에 쓰면 안 됨")
+			if len(*calls) != 1 || (*calls)[0] != "second" {
+				t.Errorf("판정을 띄워야 함: %v", *calls)
 			}
-			if got := selectTool(t, e, "git.push"); len(got) != 1 || got[0] != "first" {
-				t.Errorf("대기함 항목은 주입되지 않아야 함: %v", got)
-			}
+			assertIndexed(t, e, "second", true) // 대기 없이 바로 색인에 든다
 		})
 	}
 }
 
-func pendingSetup(t *testing.T) (Env, Input) {
+func TestAddWithoutCandidatesDoesNotSpawn(t *testing.T) {
 	e := newEnv(t)
-	first := Input{ID: "first", Text: "테스트는 푸시 전에 돌린다.", About: []string{"푸시 규칙"}, Scope: []string{"personal"}, Source: "doc"}
-	mustAdd(t, e, first, "added")
-	in := first
-	in.ID, in.Text = "second", "푸시 전에는 린트도 돌린다."
-	mustAdd(t, e, in, "pending")
-	list, err := Pending(e)
-	if err != nil || len(list) != 1 || list[0].ID != "second" || len(list[0].Candidates) != 1 {
-		t.Fatalf("대기함 목록 = %+v, %v", list, err)
+	calls := spawnRecorder(&e)
+	r := mustAdd(t, e, base("only"), "added")
+	if len(*calls) != 0 || strings.Contains(r.Text(), "후보") {
+		t.Errorf("calls=%v text=%q", *calls, r.Text())
 	}
-	return e, in
 }
 
-func read(e Env, rel string) string {
-	b, _ := os.ReadFile(filepath.Join(e.Home, rel))
-	return string(b)
+func TestAddSameIDIsRejected(t *testing.T) {
+	e := newEnv(t)
+	calls := spawnRecorder(&e)
+	mustAdd(t, e, base("dup"), "added")
+	before := read(e, "items/dup.md")
+	in := base("dup")
+	in.Text = "다른 글"
+	r := mustAdd(t, e, in, "invalid")
+	if len(r.Problems) != 1 || r.Problems[0] != "error: 같은 id 의 항목 dup 가 이미 있음. 파일을 직접 고치거나 다른 id 를 쓰세요" {
+		t.Errorf("문제 = %v", r.Problems)
+	}
+	if !strings.Contains(r.Text(), "등록하지 않았습니다") || read(e, "items/dup.md") != before || len(*calls) != 0 {
+		t.Error("같은 id 는 쓰지도 판정을 띄우지도 않아야 함")
+	}
 }
 
-func TestDecideFix(t *testing.T) {
-	e, _ := pendingSetup(t)
-	if _, err := Decide(e, "fix", "second", "first", ""); err != nil {
+func TestAddSpawnFailureStillSucceeds(t *testing.T) {
+	e := newEnv(t)
+	e.Spawn = func(string) error { return os.ErrPermission }
+	mustAdd(t, e, base("a-one"), "added")
+	in := base("a-two")
+	mustAdd(t, e, in, "added")
+	if !exists(e, "items/a-two.md") || !strings.Contains(read(e, "ledger/errors.log"), "등록 판정을 띄우지 못함") {
+		t.Errorf("오류 기록: %q", read(e, "ledger/errors.log"))
+	}
+}
+
+// 후보는 범위·동작이 겹친 것 먼저, 그다음 낱말 점수 내림차순, 같으면 id 순이고 candidates 건까지다.
+func TestSimilarOrderAndLimit(t *testing.T) {
+	e := newEnv(t)
+	e.Cfg.RegisterJudge.Candidates = 3
+	spawnRecorder(&e)
+	mk := func(id, text string, act ...string) {
+		mustAdd(t, e, Input{ID: id, Text: text, About: []string{"주제 " + id}, Scope: []string{"personal"}, Source: "doc", When: item.When{Action: item.List(act)}}, "added")
+	}
+	mk("zz-act", "완전히 다른 글", "git.push")
+	mk("aa-same", "푸시하기 전에 테스트를 먼저 돌린다.")
+	mk("bb-same", "푸시하기 전에 테스트를 먼저 돌린다.")
+	mk("cc-same", "푸시하기 전에 테스트를 먼저 돌린다.")
+	it, err := validate(Input{ID: "new-one", Text: "푸시하기 전에 테스트를 먼저 돌린다.", About: []string{"새 주제"}, Scope: []string{"personal"}, Source: "doc", When: item.When{Action: item.List{"git.push"}}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if s := read(e, "items/first.md"); !strings.Contains(s, "id: first\n") || !strings.Contains(s, "린트도") || exists(e, "items/_pending/second.md") || exists(e, "items/second.md") {
-		t.Errorf("고치기 결과:\n%s", s)
-	}
-	assertIndexed(t, e, "first", true)
-}
-
-func TestDecideReplace(t *testing.T) {
-	e, _ := pendingSetup(t)
-	if _, err := Decide(e, "replace", "second", "first", ""); err != nil {
+	got, err := Similar(e, it)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if exists(e, "items/first.md") || !exists(e, "items/second.md") || exists(e, "items/_pending/second.md") {
-		t.Error("기존 항목을 지우고 새 항목을 등록해야 함")
+	var ids []string
+	for _, c := range got {
+		ids = append(ids, c.ID)
 	}
-	assertIndexed(t, e, "first", false)
-	assertIndexed(t, e, "second", true)
-}
-
-func TestDecideKeep(t *testing.T) {
-	e, _ := pendingSetup(t)
-	if _, err := Decide(e, "keep", "second", "", " "); err == nil {
-		t.Error("이유 없이 따로 둘 수 없음")
+	if strings.Join(ids, ",") != "zz-act,aa-same,bb-same" {
+		t.Errorf("순서와 상한 = %v", ids)
 	}
-	if _, err := Decide(e, "keep", "second", "", "린트는 테스트와 다른 규칙이다"); err != nil {
-		t.Fatal(err)
-	}
-	if s := read(e, "items/second.md"); !strings.HasSuffix(s, "다른 항목으로 둔 이유: 린트는 테스트와 다른 규칙이다\n") || !exists(e, "items/first.md") || exists(e, "items/_pending/second.md") {
-		t.Errorf("따로 두기 결과:\n%s", s)
-	}
-	assertIndexed(t, e, "second", true)
-}
-
-func TestDecideDrop(t *testing.T) {
-	e, _ := pendingSetup(t)
-	if _, err := Decide(e, "drop", "second", "", ""); err != nil {
-		t.Fatal(err)
-	}
-	if exists(e, "items/_pending/second.md") || exists(e, "items/second.md") || !exists(e, "items/first.md") {
-		t.Error("대기함에서만 지워야 함")
-	}
-	if _, err := Decide(e, "drop", "second", "", ""); err == nil {
-		t.Error("없는 대기 항목은 오류")
-	}
-	if len(read(e, "ledger/2026-11.jsonl")) == 0 || !strings.Contains(read(e, "ledger/2026-11.jsonl"), `"event":"pending"`) {
-		t.Error("결정은 원장에 남아야 함")
+	it.ID = "aa-same" // 자기 자신은 뺀다
+	got, _ = Similar(e, it)
+	for _, c := range got {
+		if c.ID == "aa-same" {
+			t.Error("자기 자신이 후보에 듦")
+		}
 	}
 }
 
@@ -492,5 +500,93 @@ func TestNoGitIsFine(t *testing.T) {
 	mustAdd(t, e, base("rel-check"), "added")
 	if exists(e, ".git") {
 		t.Error("git 저장소가 아니면 아무것도 하지 않아야 함")
+	}
+}
+
+// initGit 은 데이터 폴더를 git 저장소로 만들고 git 을 부르는 함수를 돌려준다.
+func initGit(t *testing.T, e Env) func(args ...string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git 이 없음")
+	}
+	for k, v := range map[string]string{"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"} {
+		t.Setenv(k, v)
+	}
+	git := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", e.Home}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q")
+	return git
+}
+
+// 자동 커밋은 이번 등록의 파일만 담고, 손으로 고쳐 두고 커밋하지 않은 다른 항목은 담지 않는다.
+func TestGitCommitOnlyOwnFiles(t *testing.T) {
+	e := newEnv(t)
+	git := initGit(t, e)
+	mustAdd(t, e, base("hand-edited"), "added")
+	if err := os.WriteFile(filepath.Join(e.Home, "items/hand-edited.md"), []byte(read(e, "items/hand-edited.md")+"손으로 더한 줄.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	other := base("other")
+	other.Text, other.About = "커밋 메시지는 한국어로 쓴다.", []string{"커밋 메시지"}
+	mustAdd(t, e, other, "added")
+	if msg := git("log", "-1", "--format=%s"); msg != "add: other" {
+		t.Errorf("커밋 메시지 = %q", msg)
+	}
+	if files := git("show", "--name-only", "--format=", "HEAD"); files != "items/other.md" {
+		t.Errorf("커밋에 담긴 파일 = %q", files)
+	}
+	if st := git("status", "--porcelain", "--", "items"); st != "M items/hand-edited.md" {
+		t.Errorf("손으로 고친 파일은 커밋하지 않고 남아야 함: %q", st)
+	}
+}
+
+// 자동 커밋은 줄이 다룬 항목 파일과 review 의 변경을 담고, review 폴더가 없어도 실패하지 않는다.
+// 등록 판정은 항목 파일을 다루지 않으므로 손으로 고친 항목이 섞이지 않는다.
+func TestFinishRowCommitsOwnItemsAndReview(t *testing.T) {
+	e := newEnv(t)
+	git := initGit(t, e)
+	mustAdd(t, e, base("one"), "added") // review 폴더가 없다
+	if msg := git("log", "-1", "--format=%s"); msg != "add: one" || read(e, "ledger/errors.log") != "" {
+		t.Fatalf("review 폴더 없이 커밋: %q 오류 %q", msg, read(e, "ledger/errors.log"))
+	}
+	if err := os.WriteFile(filepath.Join(e.Home, "items/one.md"), []byte(read(e, "items/one.md")+"손으로 더한 줄.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(e.Home, "review"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.Home, "review", "a--b.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	judge := ledger.Row{Event: "register_judge", Moment: "judge-add", Injected: []ledger.Injected{{ID: "one"}}}
+	FinishRow(e, judge, "judge: one")
+	if files := git("show", "--name-only", "--format=", "HEAD"); files != "review/a--b.json" {
+		t.Errorf("판정은 review 파일만 커밋해야 함: %q", files)
+	}
+	if st := git("status", "--porcelain", "--", "items"); st != "M items/one.md" {
+		t.Errorf("손으로 고친 항목은 남아야 함: %q", st)
+	}
+	os.Remove(filepath.Join(e.Home, "review", "a--b.json")) // 지운 것도 커밋된다
+	FinishRow(e, ledger.Row{Event: "review", Moment: "keep", Injected: []ledger.Injected{{ID: "one"}}}, "review: 지움")
+	if st := git("status", "--porcelain", "--", "review"); st != "" || git("log", "-1", "--format=%s") != "review: 지움" {
+		t.Errorf("지움이 커밋돼야 함: %q", st)
+	}
+	if files := git("show", "--name-only", "--format=", "HEAD"); files != "review/a--b.json" {
+		t.Errorf("keep 은 항목 파일을 담지 않음: %q", files)
+	}
+	FinishRow(e, ledger.Row{Event: "review", Moment: "z"}, "변경 없음") // 바꾼 것이 없으면 커밋도 오류도 없다
+	if git("log", "-1", "--format=%s") != "review: 지움" || read(e, "ledger/errors.log") != "" {
+		t.Errorf("변경 없음: %q", read(e, "ledger/errors.log"))
+	}
+	// 합치기는 줄에 든 항목 파일(고쳐 쓴 대상)을 담는다.
+	FinishRow(e, ledger.Row{Event: "review", Moment: "merge", Injected: []ledger.Injected{{ID: "one"}}}, "review: 합침")
+	if files := git("show", "--name-only", "--format=", "HEAD"); files != "items/one.md" {
+		t.Errorf("merge 는 대상 항목 파일을 담아야 함: %q", files)
 	}
 }

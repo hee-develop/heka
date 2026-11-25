@@ -1,5 +1,5 @@
-// Package register 는 항목 등록(검증, 인용 대조, 비슷한 항목 찾기, 쓰기)과 대기함의 결정을 맡는다.
-// 등록 자체는 거절하지 않는다. 비슷한 항목이 있으면 대기함(items/_pending/)에 두고 결정을 받는다.
+// Package register 는 항목 등록(검증, 인용 대조, 쓰기, 비슷한 항목 찾기)과 은퇴를 맡는다.
+// 비슷한 항목이 있어도 등록을 막지 않는다. 후보가 있으면 판정(heka judge-add)을 떨어진 프로세스로 띄우고 기다리지 않는다.
 package register
 
 import (
@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
+	"testing"
 	"time"
 
 	"github.com/hee-develop/heka/internal/claudecode"
@@ -29,11 +31,12 @@ const similarLexical = 0.5
 // quoteWindow 는 인용을 대조할 세션 상태 파일과 기록 파일의 수정 시각 범위다.
 const quoteWindow = 24 * time.Hour
 
-// Env 는 등록이 쓰는 환경이다.
+// Env 는 등록이 쓰는 환경이다. Spawn 은 등록 판정(heka judge-add <id>)을 띄우는 주입점이고, nil 이면 떨어진 프로세스로 띄운다.
 type Env struct {
-	Home string
-	Cfg  *config.Config
-	Now  time.Time
+	Home  string
+	Cfg   *config.Config
+	Now   time.Time
+	Spawn func(id string) error
 }
 
 // Input 은 등록할 항목의 필드다. Checked 는 사람이 명령줄에서 직접 줄 때만 채우고 MCP 로는 받지 않는다.
@@ -53,8 +56,6 @@ type Input struct {
 	Checked string      `json:"-"`
 }
 
-const pendingDir = "items/_pending"
-
 // FromItem 은 읽은 항목 파일을 등록 입력으로 바꾼다.
 func FromItem(it *item.Item) Input {
 	return Input{ID: it.ID, Text: it.Text, Must: it.Must, When: it.When, About: it.About, Scope: it.Scope, Source: it.Source,
@@ -68,7 +69,7 @@ type Candidate struct {
 	Reason string `json:"reason"`
 }
 
-// Result 는 등록 결과다. Status 는 added|pending|invalid 이다.
+// Result 는 등록 결과다. Status 는 added|invalid 이다. Candidates 는 뒤에서 판정할 비슷한 항목이다.
 type Result struct {
 	Status          string      `json:"status"`
 	ID              string      `json:"id"`
@@ -83,14 +84,14 @@ func (r Result) Text() string {
 	switch r.Status {
 	case "invalid":
 		b.WriteString("등록하지 않았습니다. 고칠 문제:\n")
-	case "pending":
-		fmt.Fprintf(&b, "비슷한 항목이 있어 대기함에 뒀습니다(%s). 결정하기 전에는 주입되지 않습니다. 비슷한 항목:\n", r.ID)
-		for _, c := range r.Candidates {
-			fmt.Fprintf(&b, "- %s: %s (%s)\n", c.ID, c.Text, c.Reason)
-		}
-		b.WriteString("사용자에게 고치기·바꾸기·따로 두기 중 무엇으로 할지 물어 주세요. 정해지면 heka_pending 으로 fix(고치기)·replace(바꾸기)·keep(따로 두기, 이유 필요)을 부르고, 필요 없으면 drop 입니다.\n")
 	default:
 		fmt.Fprintf(&b, "등록했습니다: %s\n", r.ID)
+		if len(r.Candidates) > 0 {
+			fmt.Fprintf(&b, "비슷한 후보 %d건은 뒤에서 판정합니다. 사용자에게 물을 필요는 없습니다.\n", len(r.Candidates))
+			for _, c := range r.Candidates {
+				fmt.Fprintf(&b, "- %s: %s (%s)\n", c.ID, c.Text, c.Reason)
+			}
+		}
 	}
 	for _, p := range r.Problems {
 		b.WriteString("- " + p + "\n")
@@ -126,22 +127,49 @@ func Add(e Env, in Input) (Result, error) {
 		res.Status = "invalid"
 		return res, nil
 	}
-	res.Candidates, err = similar(e, it)
+	if _, err := os.Stat(filepath.Join(e.Home, "items", in.ID+".md")); err == nil {
+		res.Status = "invalid"
+		res.Problems = append(res.Problems, fmt.Sprintf("error: 같은 id 의 항목 %s 가 이미 있음. 파일을 직접 고치거나 다른 id 를 쓰세요", in.ID))
+		return res, nil
+	}
+	res.Candidates, err = Similar(e, it)
 	if err != nil {
 		return res, err
 	}
-	if len(res.Candidates) == 0 {
-		res.Status = "added"
-		err = write(e, "items", in)
-	} else {
-		res.Status = "pending"
-		err = write(e, pendingDir, in)
-	}
-	if err != nil {
+	res.Status = "added"
+	if err := write(e, "items", in); err != nil {
 		return res, err
 	}
 	finish(e, "add", res.Status, "add: "+it.ID, it.ID)
+	if len(res.Candidates) > 0 {
+		spawn := e.Spawn
+		if spawn == nil {
+			spawn = func(id string) error { return spawnJudge(e.Home, id) }
+		}
+		if err := spawn(it.ID); err != nil {
+			ledger.LogError(e.Home, "add", "등록 판정을 띄우지 못함: "+err.Error(), e.Now)
+		}
+	}
 	return res, nil
+}
+
+// spawnJudge 는 `heka judge-add <id>` 를 등록과 떨어진 프로세스(새 세션, 표준 입출력은 /dev/null)로 띄우고 기다리지 않는다.
+// 시험 프로그램 안에서는 실행 파일이 시험 바이너리라 띄우지 않는다.
+func spawnJudge(home, id string) error {
+	if testing.Testing() {
+		return nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, "judge-add", id)
+	cmd.Env = append(os.Environ(), "HEKA_HOME="+home)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
 }
 
 // validate 는 입력을 항목 파일 모양으로 만들어 item 의 검증을 그대로 적용한다.
@@ -191,8 +219,10 @@ func quoteSeen(e Env, quote string) bool {
 	return false
 }
 
-// similar 는 새 항목과 비슷한 기존 항목을 id 순으로 돌려준다.
-func similar(e Env, it *item.Item) ([]Candidate, error) {
+// Similar 는 새 항목과 비슷한 기존 항목을 돌려준다. 자기 자신은 뺀다.
+// 범위와 when.action 이 함께 겹침, 주제어가 같음, 낱말 점수가 similarLexical 이상 중 하나라도 맞으면 후보다.
+// 순서는 범위·동작이 겹친 것 먼저, 그다음 낱말 점수 내림차순, 같으면 id 오름차순이고 register_judge.candidates 건까지다.
+func Similar(e Env, it *item.Item) ([]Candidate, error) {
 	if err := index.Ensure(e.Home, e.Cfg); err != nil {
 		return nil, err
 	}
@@ -209,25 +239,27 @@ func similar(e Env, it *item.Item) ([]Candidate, error) {
 	for _, s := range ranked {
 		score[s.ID] = s.Score
 	}
+	type scored struct {
+		Candidate
+		both  bool
+		score float64
+	}
 	files, _ := filepath.Glob(filepath.Join(e.Home, "items", "*.md"))
-	var out []Candidate
-	seen := map[string]bool{}
+	var out []scored
 	for _, f := range files {
 		id := strings.TrimSuffix(filepath.Base(f), ".md")
-		seen[id] = true
-		var why []string
-		r, err := ix.Item(id)
-		if err != nil { // 색인에 없는(검증 실패) 파일은 같은 id 일 때만 본다
-			if id == it.ID {
-				out = append(out, Candidate{ID: id, Reason: "같은 id 의 파일이 있음"})
-			}
+		if id == it.ID {
 			continue
 		}
-		if id == it.ID {
-			why = append(why, "같은 id")
+		r, err := ix.Item(id)
+		if err != nil { // 색인에 없는(검증 실패) 파일은 보지 않는다
+			continue
 		}
+		var why []string
+		both := false
 		if sc := overlap(it.Scope, r.Scope); len(sc) > 0 {
 			if ac := overlap(it.When.Action, r.When["action"]); len(ac) > 0 {
+				both = true
 				why = append(why, "범위("+strings.Join(sc, ", ")+")와 동작("+strings.Join(ac, ", ")+")이 겹침")
 			}
 		}
@@ -238,11 +270,36 @@ func similar(e Env, it *item.Item) ([]Candidate, error) {
 			why = append(why, fmt.Sprintf("낱말 점수 %.2f", score[id]))
 		}
 		if len(why) > 0 {
-			out = append(out, Candidate{ID: id, Text: strings.TrimSpace(r.Text), Reason: strings.Join(why, "; ")})
+			out = append(out, scored{Candidate{ID: id, Text: strings.TrimSpace(r.Text), Reason: strings.Join(why, "; ")}, both, score[id]})
 		}
 	}
-	slices.SortFunc(out, func(a, b Candidate) int { return strings.Compare(a.ID, b.ID) })
-	return out, nil
+	slices.SortFunc(out, func(a, b scored) int {
+		switch {
+		case a.both != b.both:
+			if a.both {
+				return -1
+			}
+			return 1
+		case a.score != b.score:
+			if a.score > b.score {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	limit := 5
+	if e.Cfg != nil && e.Cfg.RegisterJudge.Candidates > 0 {
+		limit = e.Cfg.RegisterJudge.Candidates
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	cands := make([]Candidate, len(out))
+	for i, c := range out {
+		cands[i] = c.Candidate
+	}
+	return cands, nil
 }
 
 func overlap(a, b []string) []string {
@@ -290,18 +347,36 @@ func write(e Env, dir string, in Input) error {
 	return err
 }
 
-// finish 는 색인을 다시 만들고, 원장에 한 줄 남기고, 데이터 폴더가 git 저장소면 커밋을 시도한다.
+// finish 는 색인을 다시 만들고, 원장에 한 줄 남기고, 데이터 폴더가 git 저장소면 ids 의 항목 파일과 review 의 변경만 커밋을 시도한다.
 // 모두 실패해도 호출한 일은 성공이다(자동화를 멈추지 않는다).
 func finish(e Env, event, moment, msg string, ids ...string) {
 	row := ledger.Row{Event: event, Moment: moment}
 	for _, id := range ids {
 		row.Injected = append(row.Injected, ledger.Injected{ID: id})
 	}
-	finishRow(e, row, msg)
+	FinishRow(e, row, msg)
 }
 
-// finishRow 는 finish 와 같되 원장에 남길 줄을 직접 받는다. row.Event 가 오류 기록의 이벤트 이름이다.
-func finishRow(e Env, row ledger.Row, msg string) {
+// Rewrite 는 입력을 검증하고 통과하면 items/<id>.md 를 새 내용으로 다시 쓴다(임시 파일에 쓴 뒤 이름 바꾸기).
+// 검증을 통과하지 못하면 아무것도 바꾸지 않고 오류를 돌려준다. 색인·원장·커밋은 부르는 쪽이 FinishRow 로 한다.
+func Rewrite(e Env, in Input) error {
+	it, err := validate(in)
+	if err != nil {
+		return err
+	}
+	if !it.Valid() {
+		for _, p := range it.Problems {
+			if p.Level == item.Error {
+				return errors.New("검증을 통과하지 못함: " + p.Level + ": " + p.Msg)
+			}
+		}
+	}
+	return write(e, "items", in)
+}
+
+// FinishRow 는 색인을 다시 만들고, 원장에 줄을 남기고, 데이터 폴더가 git 저장소이면 줄이 다룬 항목 파일과 review 의 변경을 커밋한다.
+// row.Event 가 오류 기록의 이벤트 이름이다. 모두 실패해도 호출한 일은 성공이다.
+func FinishRow(e Env, row ledger.Row, msg string) {
 	event := row.Event
 	if err := index.Ensure(e.Home, e.Cfg); err != nil {
 		ledger.LogError(e.Home, event, "색인을 다시 만들지 못함: "+err.Error(), e.Now)
@@ -314,12 +389,62 @@ func finishRow(e Env, row ledger.Row, msg string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	for _, args := range [][]string{{"add", "-A", "--", "items"}, {"commit", "-m", msg, "--", "items"}} {
-		if err := exec.CommandContext(ctx, "git", append([]string{"-C", e.Home}, args...)...).Run(); err != nil {
+	git := func(args ...string) ([]byte, error) {
+		return exec.CommandContext(ctx, "git", append([]string{"-C", e.Home}, args...)...).Output()
+	}
+	// 이 호출이 다룬 항목의 파일(items/<id>.md)과 검토 목록(review/)에서 바뀐 것만 커밋한다.
+	// 손으로 고쳐 두고 아직 커밋하지 않은 다른 항목 파일이 엉뚱한 메시지의 커밋에 섞이지 않게 하려는 것이다.
+	// review 는 heka 만 쓰는 폴더라 통째로 본다. 없는 경로는 git status 가 무시한다.
+	cand := []string{"review"}
+	for _, id := range itemIDs(row) {
+		cand = append(cand, "items/"+id+".md")
+	}
+	out, err := git(append([]string{"status", "--porcelain", "-z", "--untracked-files=all", "--"}, cand...)...)
+	if err != nil {
+		ledger.LogError(e.Home, event, "git status 실패: "+err.Error(), e.Now)
+		return
+	}
+	paths := changedPaths(out)
+	if len(paths) == 0 {
+		return
+	}
+	for _, args := range [][]string{append([]string{"add", "-A", "--"}, paths...), append([]string{"commit", "-m", msg, "--"}, paths...)} {
+		if _, err := git(args...); err != nil {
 			ledger.LogError(e.Home, event, "git "+args[0]+" 실패: "+err.Error(), e.Now)
 			return
 		}
 	}
+}
+
+// itemIDs 는 줄이 다룬 항목 파일의 id 다. 등록 판정(register_judge)은 항목 파일을 다루지 않고,
+// 검토 결정(review)은 합치기만 대상 항목 파일을 고친다(은퇴는 Retire 가 따로 커밋한다).
+func itemIDs(row ledger.Row) []string {
+	if row.Event == "register_judge" || (row.Event == "review" && row.Moment != "merge") {
+		return nil
+	}
+	var ids []string
+	for _, in := range row.Injected {
+		ids = append(ids, in.ID)
+	}
+	return ids
+}
+
+// changedPaths 는 git status --porcelain -z 출력에서 바뀐 경로를 뽑는다.
+// 이름 바꾸기·복사 줄 뒤에 붙는 원래 경로는 건너뛴다.
+func changedPaths(out []byte) []string {
+	var paths []string
+	fields := strings.Split(string(out), "\x00")
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
+		if len(f) < 4 {
+			continue
+		}
+		paths = append(paths, f[3:])
+		if f[0] == 'R' || f[0] == 'C' {
+			i++
+		}
+	}
+	return paths
 }
 
 // Retire 는 항목 파일(items/<id>.md)을 지우고 색인을 다시 만들고 원장에 한 줄(이벤트 retire, 사유) 남긴다.
@@ -340,6 +465,28 @@ func Retire(e Env, id, reason string) (string, error) {
 		return "", err
 	}
 	row := ledger.Row{Event: "retire", Moment: "retire", Reason: reason, Injected: []ledger.Injected{{ID: id}}}
-	finishRow(e, row, reason)
+	FinishRow(e, row, reason)
 	return fmt.Sprintf("항목 %s 을 지웠습니다. 사유: %s", id, reason), nil
+}
+
+// Flag 는 항목이 틀렸거나 낡았다는 표시를 원장에 남긴다(event flag). 항목 파일은 고치지 않는다.
+// MCP 의 heka_flag 와 등록 판정의 stale 처리가 같은 줄 형식을 쓴다.
+func Flag(e Env, id, reason string) error {
+	if err := index.Ensure(e.Home, e.Cfg); err != nil {
+		return err
+	}
+	ix, err := index.Open(e.Home)
+	if err != nil {
+		return err
+	}
+	defer ix.Close()
+	rec, err := ix.Item(id)
+	if err != nil {
+		return fmt.Errorf("항목 %q 를 찾지 못함: %w", id, err)
+	}
+	row := ledger.Row{Event: "flag", Moment: "flag", Injected: []ledger.Injected{{ID: id, Hash: rec.Hash, Why: reason}}}
+	if err := ledger.Append(e.Home, row, e.Now); err != nil {
+		return fmt.Errorf("원장에 쓰지 못함: %w", err)
+	}
+	return nil
 }

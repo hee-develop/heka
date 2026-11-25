@@ -96,33 +96,30 @@ func TestAddFileAndChecked(t *testing.T) {
 	}
 }
 
-func TestPendingCommands(t *testing.T) {
+// 비슷한 항목이 있어도 바로 등록되고, heka pending 명령은 없다.
+func TestAddWithSimilarRegistersImmediately(t *testing.T) {
 	home := newHome(t)
-	add := func(id, text string) {
+	add := func(id, text string) string {
 		t.Helper()
-		if code, out, errb := runCmd("add", "--id", id, "--text", text, "--about", "푸시 규칙", "--scope", "personal", "--source", "doc"); code != 0 {
+		code, out, errb := runCmd("add", "--id", id, "--text", text, "--about", "푸시 규칙", "--scope", "personal", "--source", "doc")
+		if code != 0 {
 			t.Fatalf("%d %q %q", code, out, errb)
 		}
+		return out
 	}
 	add("first", "테스트는 푸시 전에 돌린다.")
-	add("second", "린트는 푸시 전에 돌린다.")
-	if _, out, _ := runCmd("pending"); !strings.Contains(out, "[second]") || !strings.Contains(out, "- first:") {
-		t.Errorf("pending: %q", out)
-	}
-	if code, _, _ := runCmd("pending", "keep", "second"); code != 1 {
-		t.Error("이유 없는 keep 은 실패")
-	}
-	if code, out, errb := runCmd("pending", "keep", "second", "--reason", "다른 규칙"); code != 0 {
-		t.Fatalf("keep: %q %q", out, errb)
+	out := add("second", "린트는 푸시 전에 돌린다.")
+	if !strings.Contains(out, "등록했습니다: second") || !strings.Contains(out, "- first:") || !strings.Contains(out, "사용자에게 물을 필요는 없습니다") {
+		t.Errorf("add: %q", out)
 	}
 	if _, err := os.Stat(filepath.Join(home, "items", "second.md")); err != nil {
-		t.Error("keep 은 등록해야 함")
+		t.Error("바로 등록돼야 함")
 	}
-	if code, _, _ := runCmd("pending", "bogus", "x"); code != 2 {
-		t.Error("모르는 결정은 사용법 오류")
+	if code, out, errb := runCmd("add", "--id", "second", "--text", "또", "--about", "푸시 규칙", "--scope", "personal", "--source", "doc"); code != 1 || !strings.Contains(out, "같은 id 의 항목 second 가 이미 있음") {
+		t.Errorf("같은 id: %d %q %q", code, out, errb)
 	}
-	if _, out, _ := runCmd("pending"); !strings.Contains(out, "비어") {
-		t.Errorf("pending: %q", out)
+	if code, _, _ := runCmd("pending"); code != 2 {
+		t.Error("pending 명령은 없어야 함")
 	}
 }
 

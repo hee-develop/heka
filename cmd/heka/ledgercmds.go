@@ -82,6 +82,19 @@ func whyLine(r ledger.Row) string {
 	if p := r.Pick; p != nil {
 		line += " | " + pickLine(p)
 	}
+	if rj := r.RegJudge; rj != nil {
+		var vs []string
+		for _, v := range rj.Verdicts {
+			vs = append(vs, v.ID+" "+v.Verdict)
+		}
+		line += " | 등록 판정: " + strings.Join(vs, "; ")
+		if rj.Error {
+			line += " (오류)"
+		}
+	}
+	if r.Entry != "" {
+		line += " | 검토: " + r.Entry
+	}
 	if len(r.Checks) > 0 {
 		var cs []string
 		for _, c := range r.Checks {
@@ -243,13 +256,9 @@ func listText(e listEntry) string {
 // flagStats 는 원장에 flag 가 남은 항목 id 와 그 횟수·마지막 사유다.
 func flagStats(rows []ledger.Row) (count map[string]int, lastReason map[string]string) {
 	count, lastReason = map[string]int{}, map[string]string{}
-	for _, r := range rows {
-		if r.Event != "flag" {
-			continue
-		}
-		for _, i := range r.Injected {
-			count[i.ID]++
-			lastReason[i.ID] = i.Why
+	for id, st := range ledger.StatsByItem(rows) {
+		if st.Flags > 0 {
+			count[id], lastReason[id] = st.Flags, st.LastFlag
 		}
 	}
 	return
@@ -258,14 +267,9 @@ func flagStats(rows []ledger.Row) (count map[string]int, lastReason map[string]s
 // checkFailCounts 는 원장에서 결과물 검사에 걸린(fail) 횟수를 항목 id 별로 센다.
 func checkFailCounts(rows []ledger.Row) map[string]int {
 	n := map[string]int{}
-	for _, r := range rows {
-		if !r.IsHook() {
-			continue
-		}
-		for _, c := range r.Checks {
-			if c.Result == "fail" {
-				n[c.ID]++
-			}
+	for id, st := range ledger.StatsByItem(rows) {
+		if st.CheckFails > 0 {
+			n[id] = st.CheckFails
 		}
 	}
 	return n
@@ -362,45 +366,23 @@ type statsResult struct {
 	LastFlag     string         `json:"last_flag_reason,omitempty"`
 }
 
-// 세는 탈락 단계다. 나머지 단계(범위·자격·일치)는 "후보가 못 된" 것이라 세지 않는다.
-var statsStages = []string{"예산", "중복", "판정"}
+// 세는 탈락 단계는 ledger.StatsStages 다.
 
 func computeStats(rows []ledger.Row, id string) statsResult {
 	st := statsResult{ID: id, Dropped: map[string]int{}}
-	for _, s := range statsStages {
+	for _, s := range ledger.StatsStages {
 		st.Dropped[s] = 0
 	}
-	for _, r := range rows {
-		if r.IsHook() {
-			for _, i := range r.Injected {
-				if i.ID == id {
-					st.Injected++
-					st.LastInjected = shortTS(r.TS)
-				}
-			}
-			for _, d := range r.Dropped {
-				if d.ID == id {
-					if _, ok := st.Dropped[d.Stage]; ok {
-						st.Dropped[d.Stage]++
-					}
-				}
-			}
-		}
-		if r.IsHook() {
-			for _, c := range r.Checks {
-				if c.ID == id && c.Result == "fail" {
-					st.CheckFails++
-				}
-			}
-		}
-		if r.Event == "flag" {
-			for _, i := range r.Injected {
-				if i.ID == id {
-					st.Flags++
-					st.LastFlag = i.Why
-				}
-			}
-		}
+	c := ledger.StatsByItem(rows)[id]
+	if c == nil {
+		return st
+	}
+	st.Injected, st.CheckFails, st.Flags, st.LastFlag = c.Injected, c.CheckFails, c.Flags, c.LastFlag
+	if c.LastInjected != "" {
+		st.LastInjected = shortTS(c.LastInjected)
+	}
+	for s, n := range c.Dropped {
+		st.Dropped[s] = n
 	}
 	return st
 }

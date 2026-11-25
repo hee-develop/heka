@@ -90,7 +90,7 @@ func TestMCPProcess(t *testing.T) {
 		}
 		names = append(names, tl["name"].(string))
 	}
-	if strings.Join(names, ",") != "heka_find,heka_add,heka_pending,heka_flag" {
+	if strings.Join(names, ",") != "heka_find,heka_add,heka_flag" {
 		t.Errorf("도구 = %v", names)
 	}
 
@@ -108,7 +108,7 @@ func TestMCPProcess(t *testing.T) {
 		t.Errorf("알 수 없는 도구 = %v", e)
 	}
 
-	// 도구: 등록 → 조회 → 같은 내용 재등록(대기함) → 표시 → 대기함 결정. 실패는 isError.
+	// 도구: 등록 → 조회 → 같은 내용 재등록(바로 등록, 후보 알림) → 표시. 실패는 isError.
 	txt, isErr := result(p.call(8, "heka_add", `{"id":"release-check","text":"배포 점검표는 릴리스 전에 확인한다.","about":["릴리스 점검"],"scope":["personal"],"source":"doc","body":"위키 참고."}`))
 	if isErr || !strings.Contains(txt, "등록했습니다") {
 		t.Errorf("heka_add = %q %v", txt, isErr)
@@ -118,11 +118,8 @@ func TestMCPProcess(t *testing.T) {
 		t.Errorf("heka_find = %q %v", txt, isErr)
 	}
 	txt, isErr = result(p.call(1, "heka_add", `{"id":"release-check-2","text":"배포 점검표는 릴리스 전에 확인한다.","about":["릴리스 점검"],"scope":["personal"],"source":"doc"}`))
-	if isErr || !strings.Contains(txt, "대기함") || !strings.Contains(txt, "고치기·바꾸기·따로 두기") {
-		t.Errorf("대기함 = %q %v", txt, isErr)
-	}
-	if txt, _ = result(p.call(2, "heka_pending", `{"action":"list"}`)); !strings.Contains(txt, "release-check-2") {
-		t.Errorf("heka_pending list = %q", txt)
+	if isErr || !strings.Contains(txt, "등록했습니다: release-check-2") || !strings.Contains(txt, "- release-check:") || strings.Contains(txt, "대기함") {
+		t.Errorf("후보가 있어도 등록 = %q %v", txt, isErr)
 	}
 	if txt, isErr = result(p.call(3, "heka_flag", `{"id":"release-check","reason":"점검표 위치가 바뀜"}`)); isErr || !strings.Contains(txt, "표시를 남겼") {
 		t.Errorf("heka_flag = %q %v", txt, isErr)
@@ -131,12 +128,12 @@ func TestMCPProcess(t *testing.T) {
 	if !strings.Contains(string(rows), `"event":"flag"`) || !strings.Contains(string(rows), "점검표 위치가 바뀜") || !strings.Contains(string(rows), `"event":"find"`) {
 		t.Errorf("원장: %s", rows)
 	}
-	if txt, isErr = result(p.call(4, "heka_pending", `{"action":"drop","id":"release-check-2"}`)); isErr {
-		t.Errorf("drop = %q", txt)
+	if e, ok := p.call(4, "heka_pending", `{"action":"list"}`)["error"].(map[string]any); !ok || e["code"].(float64) != -32602 {
+		t.Errorf("heka_pending 은 없어야 함: %v", e)
 	}
 	for i, c := range []struct{ name, args string }{
 		{"heka_find", `{}`}, {"heka_find", `{"query":3}`}, {"heka_flag", `{"id":"없는-항목","reason":"x"}`},
-		{"heka_pending", `{"action":"fix","id":"없음","target":"없음"}`}, {"heka_add", `{"id":"Bad"}`},
+		{"heka_add", `{"id":"Bad"}`},
 	} {
 		if txt, isErr = result(p.call(5+i, c.name, c.args)); !isErr || txt == "" {
 			t.Errorf("%s %s: isError 여야 함: %q", c.name, c.args, txt)
