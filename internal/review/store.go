@@ -158,29 +158,35 @@ func itemExists(home, id string) bool {
 	return err == nil && !st.IsDir()
 }
 
-// List 는 검토 목록을 순서대로(모순, 합치기, 미판정, 표본, 같으면 오래된 것, 같으면 id) 돌려준다.
+// Live 는 검토 목록을 순서대로 읽고, 새 항목이나 대상 항목 파일이 이미 없는 항목은 stale 로 따로 돌려준다.
+// 아무것도 쓰거나 지우지 않는다(읽기 전용 화면이 건수를 셀 때 쓴다). stale 의 값은 그 까닭이다.
+func Live(home string) (live []Entry, stale map[string]string) {
+	stale = map[string]string{}
+	for _, en := range loadAll(home) {
+		switch {
+		case !itemExists(home, en.NewID):
+			stale[en.ID] = "새 항목 " + en.NewID + " 가 이미 없음"
+		case en.TargetID != "" && !itemExists(home, en.TargetID):
+			stale[en.ID] = "대상 항목 " + en.TargetID + " 가 이미 없음"
+		default:
+			live = append(live, en)
+		}
+	}
+	return live, stale
+}
+
+// List 는 검토 목록을 순서대로(모순, 낡음, 합치기, 미판정, 표본, 같으면 오래된 것, 같으면 id) 돌려준다.
 // 새 항목이나 대상 항목 파일이 이미 없는 항목은 목록에서 빼고 지우며 원장에 남긴다.
 func List(e register.Env) []Entry {
-	var out []Entry
-	for _, en := range loadAll(e.Home) {
-		why := ""
-		switch {
-		case !itemExists(e.Home, en.NewID):
-			why = "새 항목 " + en.NewID + " 가 이미 없음"
-		case en.TargetID != "" && !itemExists(e.Home, en.TargetID):
-			why = "대상 항목 " + en.TargetID + " 가 이미 없음"
-		}
-		if why == "" {
-			out = append(out, en)
-			continue
-		}
-		Remove(e.Home, en.ID)
-		row := ledger.Row{Event: "review", Moment: "stale", Entry: en.ID, Reason: why}
+	live, stale := Live(e.Home)
+	for id, why := range stale {
+		Remove(e.Home, id)
+		row := ledger.Row{Event: "review", Moment: "stale", Entry: id, Reason: why}
 		if err := ledger.Append(e.Home, row, e.Now); err != nil {
 			ledger.LogError(e.Home, "review", "원장 쓰기 실패: "+err.Error(), e.Now)
 		}
 	}
-	return out
+	return live
 }
 
 // OldestDays 는 가장 오래된 항목의 나이(일)다. 항목이 없으면 0 이다.
