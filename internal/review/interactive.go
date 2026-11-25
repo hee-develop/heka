@@ -83,6 +83,9 @@ func keysFor(en Entry) keySet {
 	if en.Kind == KindUnjudged {
 		return keySet{"[j]다시 판정 [k]따로 두기 [n]새 것 버리기 [s]건너뛰기 [q]끝", map[string]string{"j": "", "k": DecKeep, "n": DecDropNew}}
 	}
+	if en.Kind == KindStale {
+		return keySet{"[o]옛 것 버리기 [k]따로 두기 [n]새 것 버리기 [s]건너뛰기 [q]끝", map[string]string{"o": DecDropOld, "k": DecKeep, "n": DecDropNew}}
+	}
 	dec := map[string]string{"k": DecKeep, "n": DecDropNew, "o": DecDropOld}
 	help := "[k]따로 두기 [n]새 것 버리기 [o]옛 것 버리기 [s]건너뛰기 [q]끝"
 	if en.Merged != nil && strings.TrimSpace(en.Merged.Text) != "" {
@@ -96,6 +99,8 @@ func header(en Entry) string {
 	switch en.Kind {
 	case KindConflict:
 		return fmt.Sprintf("모순: 새 %s <-> 옛 %s", en.NewID, en.TargetID)
+	case KindStale:
+		return fmt.Sprintf("낡음: 새 %s 기준으로 옛 %s 가 낡음", en.NewID, en.TargetID)
 	case KindMerge:
 		return fmt.Sprintf("합치기: 새 %s <-> 옛 %s", en.NewID, en.TargetID)
 	case KindSample:

@@ -92,7 +92,7 @@ func Parse(out string, candidates []string) (map[string]verdict, error) {
 			continue
 		}
 		switch v.Verdict {
-		case "separate", "conflict":
+		case "separate", "conflict", "stale":
 		case "merge":
 			if v.Merged == nil || strings.TrimSpace(v.Merged.Text) == "" {
 				continue
@@ -242,6 +242,12 @@ func Run(e register.Env, out io.Writer, id string) error {
 		case "conflict":
 			en.Kind = review.KindConflict
 			conflicts = append(conflicts, cid)
+		case "stale": // 알리지 않고, 옛 항목에 heka_flag 와 같은 표시만 남긴다
+			en.Kind = review.KindStale
+			why := "등록 판정: " + id + " 기준으로 낡음 — " + v.Reason
+			if err := register.Flag(e, cid, why); err != nil {
+				ledger.LogError(e.Home, "register_judge", "낡음 표시를 남기지 못함: "+err.Error(), e.Now)
+			}
 		}
 		if err := review.Save(e.Home, en); err != nil {
 			return err

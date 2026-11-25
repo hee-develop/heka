@@ -638,3 +638,47 @@ func TestHeaderDiffAndScreen(t *testing.T) {
 		t.Errorf("화면:\n%s", s)
 	}
 }
+
+func TestStaleEntries(t *testing.T) {
+	e := newEnv(t)
+	for _, id := range []string{"a", "b", "c"} {
+		add(t, e, register.Input{ID: id, Text: "글 " + id, Source: "doc"})
+	}
+	save(t, e, Entry{ID: "c--a", Kind: KindMerge, NewID: "c", TargetID: "a", Created: "2026-11-20T00:00:00Z"})
+	save(t, e, Entry{ID: "c--b", Kind: KindStale, NewID: "c", TargetID: "b", Reason: "낡음", Created: "2026-11-25T00:00:00Z"})
+	save(t, e, Entry{ID: "b--a", Kind: KindConflict, NewID: "b", TargetID: "a", Created: "2026-11-26T00:00:00Z"})
+	save(t, e, Entry{ID: "a--b", Kind: KindSample, NewID: "a", TargetID: "b", Created: "2026-11-01T00:00:00Z"})
+	var got []string
+	for _, en := range List(e) {
+		got = append(got, en.ID)
+	}
+	if !slices.Equal(got, []string{"b--a", "c--b", "c--a", "a--b"}) {
+		t.Errorf("순서(conflict, stale, merge, unjudged, sample) = %v", got)
+	}
+	// 낡음은 합칠 수 없다.
+	before, _ := os.ReadFile(filepath.Join(e.Home, "items", "b.md"))
+	if _, err := Apply(e, "c--b", DecMerge, Options{Text: "합침"}); err == nil || !strings.Contains(err.Error(), "낡음") {
+		t.Errorf("merge 거절: %v", err)
+	}
+	if after, _ := os.ReadFile(filepath.Join(e.Home, "items", "b.md")); !bytes.Equal(before, after) || !has(e, "c") {
+		t.Error("거절하면 아무것도 바뀌면 안 됨")
+	}
+	// 터미널: o, k, n, s, q 만 보이고 m 은 알 수 없는 키다.
+	e2 := newEnv(t)
+	for _, id := range []string{"a", "b"} {
+		add(t, e2, register.Input{ID: id, Text: "글 " + id, Source: "doc"})
+	}
+	save(t, e2, Entry{ID: "b--a", Kind: KindStale, NewID: "b", TargetID: "a", Reason: "낡음"})
+	var out bytes.Buffer
+	if err := Interactive(e2, strings.NewReader("m\no\n"), &out, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	if s := out.String(); !strings.Contains(s, "낡음: 새 b 기준으로 옛 a 가 낡음") || !strings.Contains(s, "[o]옛 것 버리기 [k]따로 두기 [n]새 것 버리기 [s]건너뛰기 [q]끝") ||
+		strings.Contains(s, "[m]") || !strings.Contains(s, "알 수 없는 키입니다.") || has(e2, "a") {
+		t.Errorf("화면: %s", s)
+	}
+	// 낡음에서 옛 것 버리기는 대상을 은퇴시킨다.
+	if _, err := Apply(e, "c--b", DecDropOld, Options{}); err != nil || has(e, "b") || !has(e, "c") {
+		t.Errorf("drop-old: %v", err)
+	}
+}

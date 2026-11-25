@@ -385,3 +385,48 @@ func TestRunNotifiesOncePerJudge(t *testing.T) {
 		t.Errorf("알림 = %q", n)
 	}
 }
+
+// stale 은 검토 항목(kind stale)을 만들고 옛 항목에 heka_flag 와 같은 표시를 남기며, 알리지 않는다.
+func TestRunStale(t *testing.T) {
+	notes := filepath.Join(t.TempDir(), "notes.txt")
+	e := setup(t, "")
+	cmd, _ := script(t, `{"verdicts":[{"id":"old-conf","verdict":"stale","reason":"recall 을 제거함"},{"id":"old-sep","verdict":"separate","reason":"r"}]}`)
+	e.Cfg.RegisterJudge.Command = cmd
+	e.Cfg.Review.NotifyCommand = []string{"sh", "-c", `echo "$0" >> ` + notes}
+	before, _ := os.ReadFile(filepath.Join(e.Home, "items", "old-conf.md"))
+	if err := Run(e, &bytes.Buffer{}, "new-one"); err != nil {
+		t.Fatal(err)
+	}
+	en := entries(e)["new-one--old-conf"]
+	if en.Kind != "stale" || en.TargetID != "old-conf" || en.Reason != "recall 을 제거함" || en.Merged != nil {
+		t.Errorf("검토 항목 = %+v", en)
+	}
+	if _, err := os.Stat(notes); err == nil {
+		t.Error("낡음은 알리지 않음")
+	}
+	var flag *ledger.Row
+	for _, r := range ledger.ReadAll(e.Home) {
+		if r.Event == "flag" {
+			r := r
+			flag = &r
+		}
+	}
+	if flag == nil || flag.Moment != "flag" || len(flag.Injected) != 1 || flag.Injected[0].ID != "old-conf" || flag.Injected[0].Hash == "" ||
+		flag.Injected[0].Why != "등록 판정: new-one 기준으로 낡음 — recall 을 제거함" {
+		t.Errorf("표시 줄 = %+v", flag)
+	}
+	if after, _ := os.ReadFile(filepath.Join(e.Home, "items", "old-conf.md")); !bytes.Equal(before, after) {
+		t.Error("항목 파일은 고치지 않음")
+	}
+	row := lastRow(t, e, "register_judge")
+	var found bool
+	for _, v := range row.RegJudge.Verdicts {
+		found = found || (v.ID == "old-conf" && v.Verdict == "stale")
+	}
+	if !found {
+		t.Errorf("원장 판정 줄 = %+v", row.RegJudge.Verdicts)
+	}
+	if got, err := Parse(`{"verdicts":[{"id":"a","verdict":"stale","reason":"r"}]}`, []string{"a"}); err != nil || got["a"].Verdict != "stale" {
+		t.Errorf("stale 파싱: %+v %v", got, err)
+	}
+}

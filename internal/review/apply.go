@@ -38,6 +38,9 @@ func Apply(e register.Env, entryID, decision string, o Options) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	if en.Kind == KindStale && decision == DecMerge {
+		return "", errors.New("낡음 판정은 합칠 수 없음. 옛 것 버리기(drop-old)나 따로 두기(keep)를 쓰세요")
+	}
 	reason := strings.TrimSpace(o.Reason)
 	var msg string
 	var retired []string

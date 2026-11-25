@@ -440,3 +440,25 @@ func Retire(e Env, id, reason string) (string, error) {
 	FinishRow(e, row, reason)
 	return fmt.Sprintf("항목 %s 을 지웠습니다. 사유: %s", id, reason), nil
 }
+
+// Flag 는 항목이 틀렸거나 낡았다는 표시를 원장에 남긴다(event flag). 항목 파일은 고치지 않는다.
+// MCP 의 heka_flag 와 등록 판정의 stale 처리가 같은 줄 형식을 쓴다.
+func Flag(e Env, id, reason string) error {
+	if err := index.Ensure(e.Home, e.Cfg); err != nil {
+		return err
+	}
+	ix, err := index.Open(e.Home)
+	if err != nil {
+		return err
+	}
+	defer ix.Close()
+	rec, err := ix.Item(id)
+	if err != nil {
+		return fmt.Errorf("항목 %q 를 찾지 못함: %w", id, err)
+	}
+	row := ledger.Row{Event: "flag", Moment: "flag", Injected: []ledger.Injected{{ID: id, Hash: rec.Hash, Why: reason}}}
+	if err := ledger.Append(e.Home, row, e.Now); err != nil {
+		return fmt.Errorf("원장에 쓰지 못함: %w", err)
+	}
+	return nil
+}

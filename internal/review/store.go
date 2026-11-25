@@ -20,6 +20,7 @@ import (
 // 검토 항목의 종류다.
 const (
 	KindConflict  = "conflict"
+	KindStale     = "stale"
 	KindMerge     = "merge"
 	KindUnjudged  = "unjudged"
 	KindSample    = "sample"
@@ -28,7 +29,7 @@ const (
 	sampleStateFn = ".sample-state.json"
 )
 
-var kindRank = map[string]int{KindConflict: 0, KindMerge: 1, KindUnjudged: 2, KindSample: 3}
+var kindRank = map[string]int{KindConflict: 0, KindStale: 1, KindMerge: 2, KindUnjudged: 3, KindSample: 4}
 
 // Merged 는 판정 명령이 쓴 합친 항목의 초안이다.
 type Merged struct {

@@ -16,7 +16,6 @@ import (
 
 	"github.com/hee-develop/heka/internal/config"
 	"github.com/hee-develop/heka/internal/index"
-	"github.com/hee-develop/heka/internal/ledger"
 	"github.com/hee-develop/heka/internal/lookup"
 	"github.com/hee-develop/heka/internal/register"
 )
@@ -232,18 +231,8 @@ func (s *Server) run(name string, args json.RawMessage) (msg string, isErr bool,
 		if a.ID == "" || strings.TrimSpace(a.Reason) == "" {
 			return "", false, errors.New("id 와 reason 이 필요함")
 		}
-		ix, err := s.open(cfg)
-		if err != nil {
+		if err := register.Flag(env, a.ID, a.Reason); err != nil {
 			return "", false, err
-		}
-		defer ix.Close()
-		rec, err := ix.Item(a.ID)
-		if err != nil {
-			return "", false, fmt.Errorf("항목 %q 를 찾지 못함: %w", a.ID, err)
-		}
-		row := ledger.Row{Event: "flag", Moment: "flag", Injected: []ledger.Injected{{ID: a.ID, Hash: rec.Hash, Why: a.Reason}}}
-		if err := ledger.Append(s.Home, row, now); err != nil {
-			return "", false, fmt.Errorf("원장에 쓰지 못함: %w", err)
 		}
 		return fmt.Sprintf("%s 에 표시를 남겼습니다. 항목 파일은 고치지 않았습니다. 사람이 점검 때 봅니다.", a.ID), false, nil
 	}
