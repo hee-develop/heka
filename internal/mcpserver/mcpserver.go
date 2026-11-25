@@ -1,5 +1,5 @@
 // Package mcpserver 는 표준 입출력으로 JSON-RPC 2.0 메시지를 한 줄에 하나씩 주고받는 MCP 서버다.
-// 도구는 heka_find, heka_add, heka_pending, heka_flag 넷이다. 도구 호출이 어떻게 실패해도 서버는 죽지 않는다.
+// 도구는 heka_find, heka_add, heka_flag 셋이다. 검토는 사람이 시작하므로 MCP 에 두지 않는다. 도구 호출이 어떻게 실패해도 서버는 죽지 않는다.
 package mcpserver
 
 import (
