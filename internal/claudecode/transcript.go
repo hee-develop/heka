@@ -31,9 +31,10 @@ type transcriptLine struct {
 	} `json:"message"`
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
 	Attachment    *struct {
-		Type   string          `json:"type"`
-		Prompt json.RawMessage `json:"prompt"` // 문자열이거나, 이미지를 붙였으면 content 칸의 배열이다
-		Origin struct {
+		Type        string          `json:"type"`
+		Prompt      json.RawMessage `json:"prompt"` // 문자열이거나, 이미지를 붙였으면 content 칸의 배열이다
+		CommandMode string          `json:"commandMode"`
+		Origin      struct {
 			Kind string `json:"kind"`
 		} `json:"origin"`
 	} `json:"attachment"`
@@ -46,13 +47,17 @@ type contentPart struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	ToolUseID string `json:"tool_use_id"`
+	Input     struct {
+		Answers     json.RawMessage `json:"answers"`
+		Annotations json.RawMessage `json:"annotations"`
+	} `json:"input"`
 }
 
 // askResult 는 askTool 결과의 toolUseResult 다. answers 값은 문자열이거나 문자열 배열이다.
 type askResult struct {
 	Questions []struct {
 		Question    string `json:"question"`
-		MultiSelect *bool  `json:"multiSelect"` // 없으면 여러 개를 고르는 질문으로 다룬다
+		MultiSelect *bool  `json:"multiSelect"` // 없으면 답을 어떻게 이었는지 알 수 없어 읽지 않는다
 		Options     []struct {
 			Label string `json:"label"`
 		} `json:"options"`
@@ -66,8 +71,11 @@ type askResult struct {
 //   - "type":"user" 줄의 message.content 에 든 글.
 //   - askTool 결과의 답과 메모. 사용자가 고른 선택지 라벨은 AI 가 쓴 글이라 빼고, 직접 친 글만 읽는다.
 //     답을 사람이 아닌 쪽(훅이나 SDK 의 권한 콜백)이 채웠는지는 기록으로 가릴 수 없다. 그런 설정은 사용자가 직접 둔 것이라 받아들인다.
-//   - 작업 중에 보낸 메시지("type":"attachment", attachment.type queued_command). origin.kind 가 human 인 것만 읽는다.
-//     peer·coordinator 는 다른 세션이나 에이전트가 보낸 글이다.
+//   - 작업 중에 보낸 메시지("type":"attachment", attachment.type queued_command). origin.kind 가 human 이고
+//     commandMode 가 prompt 인 것만 읽는다. peer·coordinator 는 다른 세션이나 에이전트가 보낸 글이다.
+//
+// askTool 을 부를 때 AI 가 input 에 answers·annotations 를 미리 채웠다면 그 호출의 결과는 읽지 않는다. 답이 AI 의 글일 수 있다.
+// 질문을 거절하며 친 글은 도구 결과의 본문에만 남아 읽지 않는다.
 //
 // 다음은 사용자가 친 글로 보지 않는다. askTool 이 아닌 도구의 tool_result 가 든 줄(AI 가 만든 출력이 들어갈 수 있다),
 // isMeta·isSidechain 이 참인 줄, toolPrefixes 나 systemPrefixes 로 시작하는 글.
@@ -119,14 +127,14 @@ func lineTexts(line []byte, asks map[string]bool) []string {
 		var parts []contentPart
 		if json.Unmarshal(tl.Message.Content, &parts) == nil {
 			for _, p := range parts {
-				if p.Type == "tool_use" && p.Name == askTool && p.ID != "" {
+				if p.Type == "tool_use" && p.Name == askTool && p.ID != "" && empty(p.Input.Answers) && empty(p.Input.Annotations) {
 					asks[p.ID] = true
 				}
 			}
 		}
 		return nil
 	case "attachment":
-		if a := tl.Attachment; a != nil && a.Type == "queued_command" && a.Origin.Kind == "human" {
+		if a := tl.Attachment; a != nil && a.Type == "queued_command" && a.Origin.Kind == "human" && a.CommandMode == "prompt" {
 			return contentTexts(a.Prompt)
 		}
 		return nil
@@ -163,6 +171,15 @@ func lineTexts(line []byte, asks map[string]bool) []string {
 	return texts
 }
 
+// empty 는 JSON 값이 없거나 null·빈 객체·빈 배열·빈 문자열인지 본다.
+func empty(raw json.RawMessage) bool {
+	switch string(bytes.Join(bytes.Fields(raw), nil)) {
+	case "", "null", "{}", "[]", `""`:
+		return true
+	}
+	return false
+}
+
 // contentTexts 는 문자열이거나 content 칸의 배열인 값에서 글을 꺼낸다. 배열이면 text 칸만 본다.
 func contentTexts(raw json.RawMessage) []string {
 	var s string
@@ -196,12 +213,16 @@ func askAnswers(raw json.RawMessage) []string {
 		}
 	}
 	var out []string
+	done := map[string]bool{} // answers 는 질문 글이 키라 같은 질문 글은 한 번만 읽는다
 	for _, q := range res.Questions {
+		if done[q.Question] || q.MultiSelect == nil {
+			continue
+		}
+		done[q.Question] = true
 		var one string
 		var many []string
 		if a := res.Answers[q.Question]; json.Unmarshal(a, &one) == nil {
-			multi := q.MultiSelect == nil || *q.MultiSelect
-			if t := typedAnswer(one, labels, multi); t != "" {
+			if t := typedAnswer(one, labels, *q.MultiSelect); t != "" {
 				out = append(out, t)
 			}
 		} else if json.Unmarshal(a, &many) == nil {
@@ -227,10 +248,10 @@ func askAnswers(raw json.RawMessage) []string {
 // 그래서 칸으로 나눈 뒤 앞의 라벨 칸을 떼고, 남은 칸이 꼭 하나일 때만 그 칸을 돌려준다.
 // 나눌 수 없거나 남은 칸이 여럿이면 형식을 잘못 읽은 것이라, AI 가 쓴 라벨이 섞이지 않도록 아무것도 돌려주지 않는다.
 func typedAnswer(ans string, labels map[string]bool, multi bool) string {
+	if labels[ans] {
+		return ""
+	}
 	if !multi {
-		if labels[ans] {
-			return ""
-		}
 		return ans
 	}
 	cells, ok := splitCells(ans)

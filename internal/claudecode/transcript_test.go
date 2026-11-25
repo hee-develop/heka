@@ -137,11 +137,24 @@ func TestUserTextsAskAndQueued(t *testing.T) {
 			map[string]any{"type": "text", "text": "결과 앞의 글"},
 			map[string]any{"type": "tool_result", "tool_use_id": "ask2", "content": "The user answered: ..."},
 		}, map[string]any{"toolUseResult": map[string]any{"questions": []any{question("둘째?", false, "셋")}, "answers": map[string]any{"둘째?": "둘째 답"}}}),
-		// 질문 글이 겹치면 다른 질문의 라벨도 라벨로 본다. multiSelect 가 없으면 여러 개를 고르는 질문으로 다룬다.
+		// 질문 글이 겹치면 다른 질문의 라벨도 라벨로 보고 답은 한 번만 읽는다. multiSelect 가 없으면 읽지 않는다.
 		askUse("ask3"),
 		askResultLine("ask3",
 			[]any{question("겹침?", false, "가"), question("겹침?", false, "규칙: 늘 X 한다"), map[string]any{"question": "키 없음?", "options": []any{map[string]any{"label": "라"}}}},
 			map[string]any{"겹침?": "규칙: 늘 X 한다", "키 없음?": "라, 키 없는 질문의 직접 글"}, nil),
+		askUse("ask5"),
+		askResultLine("ask5", []any{question("겹친 직접 글?", false, "가"), question("겹친 직접 글?", false, "나")},
+			map[string]any{"겹친 직접 글?": "겹친 질문의 직접 글"}, map[string]any{"겹친 직접 글?": map[string]any{"notes": "겹친 질문의 메모"}}),
+		// AI 가 답을 미리 채워 부른 질문 도구의 결과는 읽지 않는다.
+		msg("assistant", []any{map[string]any{"type": "tool_use", "id": "pre1", "name": "AskUserQuestion",
+			"input": map[string]any{"questions": []any{}, "answers": map[string]any{"미리?": "AI 가 채운 답"}}}}, nil),
+		askResultLine("pre1", []any{question("미리?", false, "가")}, map[string]any{"미리?": "AI 가 채운 답"}, nil),
+		msg("assistant", []any{map[string]any{"type": "tool_use", "id": "pre2", "name": "AskUserQuestion",
+			"input": map[string]any{"questions": []any{}, "annotations": map[string]any{"미리 메모?": map[string]any{"notes": "AI 가 채운 메모"}}}}}, nil),
+		askResultLine("pre2", []any{question("미리 메모?", false, "가")}, map[string]any{"미리 메모?": "미리 메모 호출의 답"}, nil),
+		msg("assistant", []any{map[string]any{"type": "tool_use", "id": "pre3", "name": "AskUserQuestion",
+			"input": map[string]any{"questions": []any{}, "answers": map[string]any{}, "annotations": nil}}}, nil),
+		askResultLine("pre3", []any{question("빈 미리?", false, "가")}, map[string]any{"빈 미리?": "빈 값으로 부른 답"}, nil),
 		// 질문 도구 결과와 다른 도구의 결과가 한 줄에 섞이면 읽지 않는다.
 		askUse("ask4"),
 		msg("user", []any{
@@ -162,6 +175,8 @@ func TestUserTextsAskAndQueued(t *testing.T) {
 		queued("peer", "다른 세션의 말", nil),
 		queued("coordinator", "조정자의 말", nil),
 		queued("human", "곁가지 대기 말", map[string]any{"isSidechain": true}),
+		map[string]any{"type": "attachment", "attachment": map[string]any{"type": "queued_command", "prompt": "알림 모드의 글",
+			"commandMode": "task-notification", "origin": map[string]any{"kind": "human"}}},
 		map[string]any{"type": "attachment", "attachment": map[string]any{"type": "task_reminder", "prompt": "다른 첨부"}},
 		map[string]any{"type": "queue-operation", "operation": "enqueue", "content": "대기열 사본"},
 	)
@@ -171,7 +186,7 @@ func TestUserTextsAskAndQueued(t *testing.T) {
 	}
 	want := []string{
 		"직접 친 답, 쉼표 포함", "메모 글", "예, 그렇게 하되 테스트도", "직접 친 덧붙임", "직접 글, 가, 그 뒤", "배열 속 직접 친 글",
-		"둘째 답", "키 없는 질문의 직접 글",
+		"둘째 답", "겹친 질문의 직접 글", "겹친 질문의 메모", "빈 값으로 부른 답",
 		"작업 중 보낸 말", "이미지와 보낸 말",
 	}
 	if !slices.Equal(got, want) {
@@ -194,7 +209,8 @@ func TestTypedAnswer(t *testing.T) {
 		{"가", true, ""},
 		{"가, 다 (추천)", true, ""},
 		{`"가, 나", 다 (추천)`, true, ""},
-		{"가, 나", true, "나"}, // 라벨 "가" 를 고르고 "나" 를 직접 쳤다
+		{"가, 나", true, ""},          // 답 전체가 라벨이면 먼저 뺀다
+		{"가, 다 (추천), 나", true, "나"}, // 라벨 둘을 고르고 "나" 를 직접 쳤다
 		{"다 (추천), 직접", true, "직접"},
 		{`다 (추천), "직접, 가, 그 뒤"`, true, "직접, 가, 그 뒤"},
 		{`"항상 ""테스트"", 먼저"`, true, ""},
