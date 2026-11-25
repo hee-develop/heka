@@ -16,17 +16,45 @@ import (
 )
 
 // 사용자가 친 글이 아닌 줄의 머리다. 도구가 만들어 사용자 글처럼 넣은 것들이다.
-var systemPrefixes = []string{"<local-command", "<command-name>", "<system-reminder>"}
+// <task-notification> 은 에이전트 결과 알림이다. origin 을 남기지 않는 기록에서도 막으려고 여기에도 둔다.
+// ! 로 친 명령 자체(<bash-input>)는 사용자가 친 글이라 넣지 않는다.
+var systemPrefixes = []string{"<local-command", "<system-reminder>", "<task-notification"}
+
+// inlineMarkers 는 사용자가 친 글이 아닌 블록의 머리다. 글 머리에 있든 중간에 있든 그 자리부터 끝까지 뺀다.
+// <bash-stdout>·<bash-stderr> 는 ! 명령의 출력이고, <artifact-content-authored-by-others> 는 다른 사람이 쓴 글이다.
+var inlineMarkers = []string{"<bash-stdout", "<bash-stderr", "<artifact-content-authored-by-others"}
+
+// commandPrefixes 는 슬래시 명령 줄의 머리다. 명령 줄에서는 사용자가 친 인자(<command-args>)만 읽는다.
+var commandPrefixes = []string{"<command-name>", "<command-message>"}
+
+// 사용자가 붙여넣은 글 블록은 <pasted_content id="…"> 로 열고 </pasted_content id="…"> 로 닫는다.
+const (
+	pastedOpen  = `<pasted_content id="`
+	pastedClose = `</pasted_content id="`
+)
+
+// partSep 은 한 메시지 안의 조각 경계다. content 칸 사이와 붙여넣은 블록을 뺀 자리에 둔다.
+// 조각은 따로 대조하므로, 경계 양쪽의 글이 이어 친 문장처럼 맞지 않는다.
+const partSep = "\x00"
+
+// typedSources 는 사람이 친 프롬프트의 promptSource 값이다. 값이 없는 줄도 사람이 친 것으로 본다.
+// suggestion_accepted(제안된 문장을 수락함)와 system, 그 밖의 값은 사람이 친 글이 아니다.
+var typedSources = []string{"typed", "queued", "sdk"}
 
 // askTool 은 사용자에게 선택지를 묻는 도구의 이름이다. 그 결과에는 사용자의 답이 들어 있다.
 const askTool = "AskUserQuestion"
 
 // transcriptLine 은 세션 기록 파일의 한 줄에서 쓰는 필드다.
 type transcriptLine struct {
-	Type        string `json:"type"`
-	IsMeta      bool   `json:"isMeta"`
-	IsSidechain bool   `json:"isSidechain"`
-	Message     struct {
+	Type             string `json:"type"`
+	IsMeta           bool   `json:"isMeta"`
+	IsSidechain      bool   `json:"isSidechain"`
+	IsCompactSummary bool   `json:"isCompactSummary"` // 대화를 압축하며 AI 가 쓴 요약이다
+	Origin           *struct {
+		Kind string `json:"kind"`
+	} `json:"origin"` // user 줄을 누가 넣었는지. 없거나 human 이면 사람이다
+	PromptSource string `json:"promptSource"`
+	Message      struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
@@ -78,7 +106,9 @@ type askResult struct {
 // 질문을 거절하며 친 글은 도구 결과의 본문에만 남아 읽지 않는다.
 //
 // 다음은 사용자가 친 글로 보지 않는다. askTool 이 아닌 도구의 tool_result 가 든 줄(AI 가 만든 출력이 들어갈 수 있다),
-// isMeta·isSidechain 이 참인 줄, toolPrefixes 나 systemPrefixes 로 시작하는 글.
+// isMeta·isSidechain·isCompactSummary 가 참인 줄, origin.kind 가 human 이 아닌 user 줄(에이전트 결과 알림 등),
+// toolPrefixes 나 systemPrefixes 로 시작하는 글, inlineMarkers 부터 끝, 붙여넣은 글 블록(사용자가 쓴 글이 아닐 수 있다),
+// 슬래시 명령 줄에서 <command-args> 밖의 글. 자세한 것은 userFragments 에 있다.
 // AI 의 글("type":"assistant")은 askTool 호출의 id 를 기억하는 데만 쓴다. 깨진 줄은 건너뛰고, 파일을 못 열면 오류를 돌려준다.
 // 기록 형식은 Claude Code 가 문서로 내지 않은 내부 형식이라, 형식이 바뀌면 여기서 읽지 못하는 글이 생긴다.
 func UserTexts(path string, toolPrefixes []string) ([]string, error) {
@@ -94,11 +124,7 @@ func UserTexts(path string, toolPrefixes []string) ([]string, error) {
 		line, err := r.ReadBytes('\n')
 		if len(bytes.TrimSpace(line)) > 0 && mayHoldUserText(line) {
 			for _, t := range lineTexts(line, asks) {
-				head := strings.TrimSpace(t)
-				if head == "" || hasAnyPrefix(head, systemPrefixes) || hasAnyPrefix(head, toolPrefixes) {
-					continue
-				}
-				out = append(out, t)
+				out = append(out, userFragments(t, toolPrefixes)...)
 			}
 		}
 		if err != nil {
@@ -110,6 +136,97 @@ func UserTexts(path string, toolPrefixes []string) ([]string, error) {
 	}
 }
 
+// userFragments 는 한 메시지(칸들을 partSep 으로 이은 것)에서 사용자가 친 조각들을 돌려준다.
+// 판단이 애매하면 사용자 글을 놓치는 쪽으로 기운다. 사람이 치지 않은 글이 인용으로 통과하는 것보다 낫다.
+//  1. 칸마다 원래 글을 보고 남길 구역을 먼저 정한다. 슬래시 명령 칸은 첫 <command-args> 부터 마지막
+//     </command-args> 까지만 남기고, systemPrefixes·toolPrefixes 로 시작하면 칸을 버리고, inlineMarkers 부터 끝을 자른다.
+//     붙여넣기 태그가 버린 구역 안에 있어도 뒤의 처리에 닿지 않게 하려고 이 일을 먼저 한다.
+//  2. 남긴 글을 다시 이어 붙여넣은 글 블록을 뺀다. 블록이 칸 여럿에 걸쳐도 한 번에 뺀다.
+//  3. partSep 으로 나눈 조각을 따로 돌려준다. 이어 붙이면 사용자가 이어 친 적 없는 문장이 인용 대조에서 맞을 수 있다.
+//     조각이 systemPrefixes·toolPrefixes 로 시작하면 그 조각도 버린다.
+func userFragments(m string, toolPrefixes []string) []string {
+	parts := strings.Split(m, partSep)
+	for i, p := range parts {
+		parts[i] = keptRegion(p, toolPrefixes)
+	}
+	var out []string
+	for _, f := range strings.Split(removePasted(strings.Join(parts, partSep)), partSep) {
+		if strings.TrimSpace(f) == "" || generated(f, toolPrefixes) {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// keptRegion 은 한 칸에서 사용자가 친 글일 수 있는 구역만 남긴다(userFragments 의 1).
+func keptRegion(p string, toolPrefixes []string) string {
+	if hasAnyPrefix(strings.TrimSpace(p), commandPrefixes) {
+		i := strings.Index(p, "<command-args>")
+		if i < 0 {
+			return ""
+		}
+		p = p[i+len("<command-args>"):]
+		if j := strings.LastIndex(p, "</command-args>"); j >= 0 {
+			p = p[:j]
+		}
+	}
+	if generated(p, toolPrefixes) {
+		return ""
+	}
+	for _, mk := range inlineMarkers {
+		if i := strings.Index(p, mk); i >= 0 {
+			p = p[:i]
+		}
+	}
+	return p
+}
+
+// generated 는 글이 systemPrefixes·toolPrefixes 로 시작하는지, 곧 도구가 만든 글인지 본다.
+func generated(t string, toolPrefixes []string) bool {
+	head := strings.TrimSpace(t)
+	return hasAnyPrefix(head, systemPrefixes) || hasAnyPrefix(head, toolPrefixes)
+}
+
+// removePasted 는 붙여넣은 글 블록을 partSep 으로 바꾼다. 닫는 머리가 없으면 여는 머리부터 끝까지 뺀다.
+// 여는 머리 없이 닫는 머리가 나오면 그 칸의 글이 어디서 왔는지 알 수 없어 그 칸을 통째로 뺀다.
+func removePasted(t string) string {
+	var b strings.Builder
+	for t != "" {
+		open, close := strings.Index(t, pastedOpen), strings.Index(t, pastedClose)
+		if close >= 0 && (open < 0 || close < open) {
+			if k := strings.LastIndex(t[:close], partSep); k >= 0 {
+				b.WriteString(t[:k])
+			}
+			b.WriteString(partSep)
+			n := strings.Index(t[close:], partSep)
+			if n < 0 {
+				break
+			}
+			t = t[close+n:]
+			continue
+		}
+		if open < 0 {
+			b.WriteString(t)
+			break
+		}
+		b.WriteString(t[:open])
+		b.WriteString(partSep)
+		rest := t[open+len(pastedOpen):]
+		j := strings.Index(rest, `">`)
+		if j < 0 {
+			break
+		}
+		closing := pastedClose + rest[:j] + `">`
+		k := strings.Index(rest, closing)
+		if k < 0 {
+			break
+		}
+		t = rest[k+len(closing):]
+	}
+	return b.String()
+}
+
 // mayHoldUserText 는 JSON 을 풀기 전에 볼 필요가 없는 줄을 거른다.
 func mayHoldUserText(line []byte) bool {
 	return bytes.Contains(line, []byte(`"user"`)) || bytes.Contains(line, []byte(`"queued_command"`)) ||
@@ -119,7 +236,7 @@ func mayHoldUserText(line []byte) bool {
 // lineTexts 는 한 줄에서 사용자가 친 글을 꺼낸다. assistant 줄이면 askTool 호출의 id 를 asks 에 더한다.
 func lineTexts(line []byte, asks map[string]bool) []string {
 	var tl transcriptLine
-	if json.Unmarshal(line, &tl) != nil || tl.IsMeta || tl.IsSidechain {
+	if json.Unmarshal(line, &tl) != nil || tl.IsMeta || tl.IsSidechain || tl.IsCompactSummary {
 		return nil
 	}
 	switch tl.Type {
@@ -135,16 +252,22 @@ func lineTexts(line []byte, asks map[string]bool) []string {
 		return nil
 	case "attachment":
 		if a := tl.Attachment; a != nil && a.Type == "queued_command" && a.Origin.Kind == "human" && a.CommandMode == "prompt" {
-			return contentTexts(a.Prompt)
+			return joinParts(contentTexts(a.Prompt))
 		}
 		return nil
 	case "user":
+		if o := tl.Origin; o != nil && o.Kind != "" && o.Kind != "human" {
+			return nil
+		}
+		if tl.PromptSource != "" && !slices.Contains(typedSources, tl.PromptSource) {
+			return nil
+		}
 	default:
 		return nil
 	}
 	var parts []contentPart
 	if json.Unmarshal(tl.Message.Content, &parts) != nil {
-		return contentTexts(tl.Message.Content)
+		return joinParts(contentTexts(tl.Message.Content))
 	}
 	// tool_result 가 든 줄은 askTool 의 결과만 있을 때 그 답만 읽는다. 같은 줄의 다른 글은 Claude Code 가
 	// 붙인 안내일 수 있고, toolUseResult 는 줄마다 하나라 다른 도구의 결과와 섞이면 누구의 것인지 가릴 수 없다.
@@ -168,7 +291,15 @@ func lineTexts(line []byte, asks map[string]bool) []string {
 	case ask:
 		return askAnswers(tl.ToolUseResult)
 	}
-	return texts
+	return joinParts(texts)
+}
+
+// joinParts 는 한 메시지의 칸들을 partSep 으로 이어 하나로 돌려준다. 붙여넣은 블록이 칸 여럿에 걸쳐도 한 번에 뺄 수 있다.
+func joinParts(parts []string) []string {
+	if len(parts) == 0 {
+		return nil
+	}
+	return []string{strings.Join(parts, partSep)}
 }
 
 // empty 는 JSON 값이 없거나 null·빈 객체·빈 배열·빈 문자열인지 본다.
