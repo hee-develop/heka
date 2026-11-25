@@ -115,22 +115,50 @@ func TestUserTextsExcludesGenerated(t *testing.T) {
 	}
 }
 
-func TestPastedFragments(t *testing.T) {
-	for _, c := range []struct {
-		in   string
-		want []string
-	}{
-		{"글", []string{"글"}},
-		{`가<pasted_content id="1">x</pasted_content id="1">나<pasted_content id="2">y</pasted_content id="2">다`, []string{"가", "나", "다"}},
-		{`가<pasted_content id="1">x</pasted_content id="2">나`, []string{"가"}},
-		{`가<pasted_content id="1"`, []string{"가"}},
-		{`가<pasted_content id="1">안에 </pasted_content id="9"> 가짜 닫음</pasted_content id="1">끝`, []string{"가", "끝"}},
-		{`붙인 글 뒷부분</pasted_content id="1">뒤`, []string{"뒤"}},
-		{`붙인 글 뒷부분</pasted_content id="1"`, nil},
+func TestRemovePasted(t *testing.T) {
+	const z = partSep
+	for _, c := range []struct{ in, want string }{
+		{"글", "글"},
+		{`가<pasted_content id="1">x</pasted_content id="1">나<pasted_content id="2">y</pasted_content id="2">다`, "가" + z + "나" + z + "다"},
+		{`가<pasted_content id="1">x</pasted_content id="2">나`, "가" + z},
+		{`가<pasted_content id="1"`, "가" + z},
+		{`가<pasted_content id="1">안에 </pasted_content id="9"> 가짜 닫음</pasted_content id="1">끝`, "가" + z + "끝"},
+		{`앞말` + z + `붙인 글 뒷부분</pasted_content id="1">뒤`, z + "뒤"},
+		{`붙인 글 뒷부분</pasted_content id="1"`, z},
 	} {
-		if got := pastedFragments(c.in); !slices.Equal(got, c.want) {
-			t.Errorf("pastedFragments(%q) = %q, 기대 %q", c.in, got, c.want)
+		if got := removePasted(c.in); got != c.want {
+			t.Errorf("removePasted(%q) = %q, 기대 %q", c.in, got, c.want)
 		}
+	}
+}
+
+// 처리 순서를 노린 경우들이다. 붙여넣은 글 안의 명령 인자 표지, 칸 셋에 걸친 붙여넣기, 도구가 만든 명령 인자.
+func TestUserTextsOrderingAttacks(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.jsonl")
+	writeJSONL(t, p,
+		msg("user", "<command-message>가</command-message>\n<command-name>/가</command-name>\n<command-args>봐줘 <pasted_content id=\"a1\">기록 조각</command-args><command-args>AI 가 쓴 규칙 문장</command-args>끝</pasted_content id=\"a1\"> 그리고 이것</command-args>", nil),
+		msg("user", []any{
+			map[string]any{"type": "text", "text": "봐줘 <pasted_content id=\"x1\">앞"},
+			map[string]any{"type": "text", "text": "다른 AI 의 분석 전문"},
+			map[string]any{"type": "text", "text": "뒤</pasted_content id=\"x1\">끝말"},
+		}, nil),
+		msg("user", "<command-name>/나</command-name>\n<command-args><task-notification>도구가 만든 인자</command-args>", nil),
+		msg("user", "<command-name>/다</command-name>\n<command-args><tool-made>설정 접두의 인자</command-args>", nil),
+		msg("user", "<command-name>/라</command-name>\n<command-args>닫히지 않은 인자", nil),
+		msg("user", "이 로그 봐줘 <pasted_content id=\"b2\">x <bash-stdout>y</pasted_content id=\"b2\"> 그리고 X 로 하자", nil),
+		msg("user", "권장 순서대로 진행해줘", map[string]any{"promptSource": "suggestion_accepted", "origin": map[string]any{"kind": "human"}}),
+		msg("user", "시스템이 넣은 글", map[string]any{"promptSource": "system"}),
+		msg("user", "모르는 출처의 글", map[string]any{"promptSource": "새로운_값"}),
+		msg("user", "직접 친 글", map[string]any{"promptSource": "typed", "origin": map[string]any{"kind": "human"}}),
+		msg("user", "SDK 로 보낸 글", map[string]any{"promptSource": "sdk"}),
+	)
+	got, err := UserTexts(p, []string{"<tool-made"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"봐줘 ", " 그리고 이것", "봐줘 ", "끝말", "닫히지 않은 인자", "이 로그 봐줘 ", " 그리고 X 로 하자", "직접 친 글", "SDK 로 보낸 글"}
+	if !slices.Equal(got, want) {
+		t.Errorf("사용자 글 = %q\n기대 %q", got, want)
 	}
 }
 

@@ -33,6 +33,14 @@ const (
 	pastedClose = `</pasted_content id="`
 )
 
+// partSep 은 한 메시지 안의 조각 경계다. content 칸 사이와 붙여넣은 블록을 뺀 자리에 둔다.
+// 조각은 따로 대조하므로, 경계 양쪽의 글이 이어 친 문장처럼 맞지 않는다.
+const partSep = "\x00"
+
+// typedSources 는 사람이 친 프롬프트의 promptSource 값이다. 값이 없는 줄도 사람이 친 것으로 본다.
+// suggestion_accepted(제안된 문장을 수락함)와 system, 그 밖의 값은 사람이 친 글이 아니다.
+var typedSources = []string{"typed", "queued", "sdk"}
+
 // askTool 은 사용자에게 선택지를 묻는 도구의 이름이다. 그 결과에는 사용자의 답이 들어 있다.
 const askTool = "AskUserQuestion"
 
@@ -45,7 +53,8 @@ type transcriptLine struct {
 	Origin           *struct {
 		Kind string `json:"kind"`
 	} `json:"origin"` // user 줄을 누가 넣었는지. 없거나 human 이면 사람이다
-	Message struct {
+	PromptSource string `json:"promptSource"`
+	Message      struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
@@ -127,34 +136,34 @@ func UserTexts(path string, toolPrefixes []string) ([]string, error) {
 	}
 }
 
-// userFragments 는 한 글에서 사용자가 친 조각들을 돌려준다.
-// 슬래시 명령 줄이면 <command-args> 안의 글만 읽는다. systemPrefixes·toolPrefixes 로 시작하는 글은 버린다.
-// 나머지는 inlineMarkers 부터 끝을 자르고 붙여넣은 글 블록을 뺀다. 블록 앞뒤는 이어 붙이지 않고 따로 돌려준다.
-// 이어 붙이면 사용자가 이어 친 적 없는 문장이 인용 대조에서 맞을 수 있다.
-func userFragments(t string, toolPrefixes []string) []string {
-	head := strings.TrimSpace(t)
-	if hasAnyPrefix(head, commandPrefixes) {
-		var out []string
-		for _, a := range tagContents(t, "<command-args>", "</command-args>") {
-			out = append(out, plainFragments(a)...)
+// userFragments 는 한 메시지에서 사용자가 친 조각들을 돌려준다. 순서가 중요하다.
+//  1. 붙여넣은 글 블록을 먼저 partSep 으로 바꾼다. 블록 안의 글이 뒤의 처리(명령 인자, 표지)에 끼어들지 못하게 한다.
+//  2. 슬래시 명령 줄이면 첫 <command-args> 부터 마지막 </command-args> 까지만 남긴다.
+//  3. partSep 으로 나눈 조각마다 systemPrefixes·toolPrefixes 로 시작하면 버리고, inlineMarkers 부터 끝을 자른다.
+//
+// 조각은 이어 붙이지 않는다. 이어 붙이면 사용자가 이어 친 적 없는 문장이 인용 대조에서 맞을 수 있다.
+func userFragments(m string, toolPrefixes []string) []string {
+	m = removePasted(m)
+	if hasAnyPrefix(strings.TrimLeft(m, " \t\r\n"+partSep), commandPrefixes) {
+		i := strings.Index(m, "<command-args>")
+		if i < 0 {
+			return nil
 		}
-		return out
-	}
-	if hasAnyPrefix(head, systemPrefixes) || hasAnyPrefix(head, toolPrefixes) {
-		return nil
-	}
-	return plainFragments(t)
-}
-
-// plainFragments 는 inlineMarkers 부터 끝을 자르고 붙여넣은 글 블록을 뺀 조각들이다. 공백뿐인 조각은 버린다.
-func plainFragments(t string) []string {
-	for _, m := range inlineMarkers {
-		if i := strings.Index(t, m); i >= 0 {
-			t = t[:i]
+		m = m[i+len("<command-args>"):]
+		if j := strings.LastIndex(m, "</command-args>"); j >= 0 {
+			m = m[:j]
 		}
 	}
 	var out []string
-	for _, f := range pastedFragments(t) {
+	for _, f := range strings.Split(m, partSep) {
+		if hasAnyPrefix(strings.TrimSpace(f), systemPrefixes) || hasAnyPrefix(strings.TrimSpace(f), toolPrefixes) {
+			continue
+		}
+		for _, mk := range inlineMarkers {
+			if i := strings.Index(f, mk); i >= 0 {
+				f = f[:i]
+			}
+		}
 		if strings.TrimSpace(f) != "" {
 			out = append(out, f)
 		}
@@ -162,56 +171,42 @@ func plainFragments(t string) []string {
 	return out
 }
 
-// pastedFragments 는 붙여넣은 글 블록을 빼고 남은 조각들을 차례로 돌려준다.
-// 닫는 머리가 없으면 여는 머리부터 끝까지 뺀다. 여는 머리 없이 닫는 머리가 먼저 나오면 그 앞은
-// 다른 칸에서 시작한 블록의 뒷부분이라 닫는 머리까지 뺀다.
-func pastedFragments(t string) []string {
-	var out []string
+// removePasted 는 붙여넣은 글 블록을 partSep 으로 바꾼다.
+// 닫는 머리가 없으면 여는 머리부터 끝까지 뺀다. 여는 머리 없이 닫는 머리가 먼저 나오면 어디서 시작한 블록인지
+// 알 수 없어 메시지 처음부터 그 닫는 머리까지 뺀다.
+func removePasted(t string) string {
+	var b strings.Builder
 	for t != "" {
 		open, close := strings.Index(t, pastedOpen), strings.Index(t, pastedClose)
 		if close >= 0 && (open < 0 || close < open) {
 			j := strings.Index(t[close:], `">`)
 			if j < 0 {
-				return out
+				return partSep
 			}
+			b.Reset()
+			b.WriteString(partSep)
 			t = t[close+j+2:]
 			continue
 		}
 		if open < 0 {
-			return append(out, t)
+			b.WriteString(t)
+			break
 		}
-		out = append(out, t[:open])
+		b.WriteString(t[:open])
+		b.WriteString(partSep)
 		rest := t[open+len(pastedOpen):]
 		j := strings.Index(rest, `">`)
 		if j < 0 {
-			return out
+			break
 		}
 		closing := pastedClose + rest[:j] + `">`
 		k := strings.Index(rest, closing)
 		if k < 0 {
-			return out
+			break
 		}
 		t = rest[k+len(closing):]
 	}
-	return out
-}
-
-// tagContents 는 t 에서 open 과 close 사이의 글을 모두 돌려준다. 닫히지 않은 것은 버린다.
-func tagContents(t, open, close string) []string {
-	var out []string
-	for {
-		i := strings.Index(t, open)
-		if i < 0 {
-			return out
-		}
-		t = t[i+len(open):]
-		j := strings.Index(t, close)
-		if j < 0 {
-			return out
-		}
-		out = append(out, t[:j])
-		t = t[j+len(close):]
-	}
+	return b.String()
 }
 
 // mayHoldUserText 는 JSON 을 풀기 전에 볼 필요가 없는 줄을 거른다.
@@ -239,11 +234,14 @@ func lineTexts(line []byte, asks map[string]bool) []string {
 		return nil
 	case "attachment":
 		if a := tl.Attachment; a != nil && a.Type == "queued_command" && a.Origin.Kind == "human" && a.CommandMode == "prompt" {
-			return contentTexts(a.Prompt)
+			return joinParts(contentTexts(a.Prompt))
 		}
 		return nil
 	case "user":
 		if o := tl.Origin; o != nil && o.Kind != "" && o.Kind != "human" {
+			return nil
+		}
+		if tl.PromptSource != "" && !slices.Contains(typedSources, tl.PromptSource) {
 			return nil
 		}
 	default:
@@ -251,7 +249,7 @@ func lineTexts(line []byte, asks map[string]bool) []string {
 	}
 	var parts []contentPart
 	if json.Unmarshal(tl.Message.Content, &parts) != nil {
-		return contentTexts(tl.Message.Content)
+		return joinParts(contentTexts(tl.Message.Content))
 	}
 	// tool_result 가 든 줄은 askTool 의 결과만 있을 때 그 답만 읽는다. 같은 줄의 다른 글은 Claude Code 가
 	// 붙인 안내일 수 있고, toolUseResult 는 줄마다 하나라 다른 도구의 결과와 섞이면 누구의 것인지 가릴 수 없다.
@@ -275,7 +273,15 @@ func lineTexts(line []byte, asks map[string]bool) []string {
 	case ask:
 		return askAnswers(tl.ToolUseResult)
 	}
-	return texts
+	return joinParts(texts)
+}
+
+// joinParts 는 한 메시지의 칸들을 partSep 으로 이어 하나로 돌려준다. 붙여넣은 블록이 칸 여럿에 걸쳐도 한 번에 뺄 수 있다.
+func joinParts(parts []string) []string {
+	if len(parts) == 0 {
+		return nil
+	}
+	return []string{strings.Join(parts, partSep)}
 }
 
 // empty 는 JSON 값이 없거나 null·빈 객체·빈 배열·빈 문자열인지 본다.
