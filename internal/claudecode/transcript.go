@@ -136,56 +136,74 @@ func UserTexts(path string, toolPrefixes []string) ([]string, error) {
 	}
 }
 
-// userFragments 는 한 메시지에서 사용자가 친 조각들을 돌려준다. 순서가 중요하다.
-//  1. 붙여넣은 글 블록을 먼저 partSep 으로 바꾼다. 블록 안의 글이 뒤의 처리(명령 인자, 표지)에 끼어들지 못하게 한다.
-//  2. 슬래시 명령 줄이면 첫 <command-args> 부터 마지막 </command-args> 까지만 남긴다.
-//  3. partSep 으로 나눈 조각마다 systemPrefixes·toolPrefixes 로 시작하면 버리고, inlineMarkers 부터 끝을 자른다.
-//
-// 조각은 이어 붙이지 않는다. 이어 붙이면 사용자가 이어 친 적 없는 문장이 인용 대조에서 맞을 수 있다.
+// userFragments 는 한 메시지(칸들을 partSep 으로 이은 것)에서 사용자가 친 조각들을 돌려준다.
+// 판단이 애매하면 사용자 글을 놓치는 쪽으로 기운다. 사람이 치지 않은 글이 인용으로 통과하는 것보다 낫다.
+//  1. 칸마다 원래 글을 보고 남길 구역을 먼저 정한다. 슬래시 명령 칸은 첫 <command-args> 부터 마지막
+//     </command-args> 까지만 남기고, systemPrefixes·toolPrefixes 로 시작하면 칸을 버리고, inlineMarkers 부터 끝을 자른다.
+//     붙여넣기 태그가 버린 구역 안에 있어도 뒤의 처리에 닿지 않게 하려고 이 일을 먼저 한다.
+//  2. 남긴 글을 다시 이어 붙여넣은 글 블록을 뺀다. 블록이 칸 여럿에 걸쳐도 한 번에 뺀다.
+//  3. partSep 으로 나눈 조각을 따로 돌려준다. 이어 붙이면 사용자가 이어 친 적 없는 문장이 인용 대조에서 맞을 수 있다.
+//     조각이 systemPrefixes·toolPrefixes 로 시작하면 그 조각도 버린다.
 func userFragments(m string, toolPrefixes []string) []string {
-	m = removePasted(m)
-	if hasAnyPrefix(strings.TrimLeft(m, " \t\r\n"+partSep), commandPrefixes) {
-		i := strings.Index(m, "<command-args>")
-		if i < 0 {
-			return nil
-		}
-		m = m[i+len("<command-args>"):]
-		if j := strings.LastIndex(m, "</command-args>"); j >= 0 {
-			m = m[:j]
-		}
+	parts := strings.Split(m, partSep)
+	for i, p := range parts {
+		parts[i] = keptRegion(p, toolPrefixes)
 	}
 	var out []string
-	for _, f := range strings.Split(m, partSep) {
-		if hasAnyPrefix(strings.TrimSpace(f), systemPrefixes) || hasAnyPrefix(strings.TrimSpace(f), toolPrefixes) {
+	for _, f := range strings.Split(removePasted(strings.Join(parts, partSep)), partSep) {
+		if strings.TrimSpace(f) == "" || generated(f, toolPrefixes) {
 			continue
 		}
-		for _, mk := range inlineMarkers {
-			if i := strings.Index(f, mk); i >= 0 {
-				f = f[:i]
-			}
-		}
-		if strings.TrimSpace(f) != "" {
-			out = append(out, f)
-		}
+		out = append(out, f)
 	}
 	return out
 }
 
-// removePasted 는 붙여넣은 글 블록을 partSep 으로 바꾼다.
-// 닫는 머리가 없으면 여는 머리부터 끝까지 뺀다. 여는 머리 없이 닫는 머리가 먼저 나오면 어디서 시작한 블록인지
-// 알 수 없어 메시지 처음부터 그 닫는 머리까지 뺀다.
+// keptRegion 은 한 칸에서 사용자가 친 글일 수 있는 구역만 남긴다(userFragments 의 1).
+func keptRegion(p string, toolPrefixes []string) string {
+	if hasAnyPrefix(strings.TrimSpace(p), commandPrefixes) {
+		i := strings.Index(p, "<command-args>")
+		if i < 0 {
+			return ""
+		}
+		p = p[i+len("<command-args>"):]
+		if j := strings.LastIndex(p, "</command-args>"); j >= 0 {
+			p = p[:j]
+		}
+	}
+	if generated(p, toolPrefixes) {
+		return ""
+	}
+	for _, mk := range inlineMarkers {
+		if i := strings.Index(p, mk); i >= 0 {
+			p = p[:i]
+		}
+	}
+	return p
+}
+
+// generated 는 글이 systemPrefixes·toolPrefixes 로 시작하는지, 곧 도구가 만든 글인지 본다.
+func generated(t string, toolPrefixes []string) bool {
+	head := strings.TrimSpace(t)
+	return hasAnyPrefix(head, systemPrefixes) || hasAnyPrefix(head, toolPrefixes)
+}
+
+// removePasted 는 붙여넣은 글 블록을 partSep 으로 바꾼다. 닫는 머리가 없으면 여는 머리부터 끝까지 뺀다.
+// 여는 머리 없이 닫는 머리가 나오면 그 칸의 글이 어디서 왔는지 알 수 없어 그 칸을 통째로 뺀다.
 func removePasted(t string) string {
 	var b strings.Builder
 	for t != "" {
 		open, close := strings.Index(t, pastedOpen), strings.Index(t, pastedClose)
 		if close >= 0 && (open < 0 || close < open) {
-			j := strings.Index(t[close:], `">`)
-			if j < 0 {
-				return partSep
+			if k := strings.LastIndex(t[:close], partSep); k >= 0 {
+				b.WriteString(t[:k])
 			}
-			b.Reset()
 			b.WriteString(partSep)
-			t = t[close+j+2:]
+			n := strings.Index(t[close:], partSep)
+			if n < 0 {
+				break
+			}
+			t = t[close+n:]
 			continue
 		}
 		if open < 0 {

@@ -123,7 +123,8 @@ func TestRemovePasted(t *testing.T) {
 		{`가<pasted_content id="1">x</pasted_content id="2">나`, "가" + z},
 		{`가<pasted_content id="1"`, "가" + z},
 		{`가<pasted_content id="1">안에 </pasted_content id="9"> 가짜 닫음</pasted_content id="1">끝`, "가" + z + "끝"},
-		{`앞말` + z + `붙인 글 뒷부분</pasted_content id="1">뒤`, z + "뒤"},
+		{`앞말` + z + `붙인 글 뒷부분</pasted_content id="1">뒤` + z + "다음 칸", "앞말" + z + z + "다음 칸"},
+		{`붙인 글 뒷부분</pasted_content id="1">뒤`, z},
 		{`붙인 글 뒷부분</pasted_content id="1"`, z},
 	} {
 		if got := removePasted(c.in); got != c.want {
@@ -146,6 +147,19 @@ func TestUserTextsOrderingAttacks(t *testing.T) {
 		msg("user", "<command-name>/다</command-name>\n<command-args><tool-made>설정 접두의 인자</command-args>", nil),
 		msg("user", "<command-name>/라</command-name>\n<command-args>닫히지 않은 인자", nil),
 		msg("user", "이 로그 봐줘 <pasted_content id=\"b2\">x <bash-stdout>y</pasted_content id=\"b2\"> 그리고 X 로 하자", nil),
+		// 걸러야 할 구역 안의 붙여넣기 태그가 그 뒤의 글을 구역 밖으로 빼내지 못한다.
+		msg("user", "<bash-stdout>노트 </pasted_content id=\"1\"> 규칙 문장</bash-stdout><bash-stderr></bash-stderr>", nil),
+		msg("user", "<system-reminder>파일: <pasted_content id=\"1\">x</pasted_content id=\"1\"> AI 규칙</system-reminder>", nil),
+		msg("user", "<tool-made>지시 <pasted_content id=\"2\">y</pasted_content id=\"2\"> 블록 뒤 글", nil),
+		// 짝 없는 닫는 태그는 그 칸만 버린다. 명령 칸이 첫 칸이 아니어도 인자만 남긴다.
+		msg("user", []any{
+			map[string]any{"type": "text", "text": "이 규칙으로 하자"},
+			map[string]any{"type": "text", "text": "파일 내용 </pasted_content id=\"1\"> 뒤 내용"},
+		}, nil),
+		msg("user", []any{
+			map[string]any{"type": "text", "text": "앞 글"},
+			map[string]any{"type": "text", "text": "<command-name>/x</command-name><command-message>x is running…</command-message><command-args>인자 a</command-args>"},
+		}, nil),
 		msg("user", "권장 순서대로 진행해줘", map[string]any{"promptSource": "suggestion_accepted", "origin": map[string]any{"kind": "human"}}),
 		msg("user", "시스템이 넣은 글", map[string]any{"promptSource": "system"}),
 		msg("user", "모르는 출처의 글", map[string]any{"promptSource": "새로운_값"}),
@@ -156,7 +170,9 @@ func TestUserTextsOrderingAttacks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"봐줘 ", " 그리고 이것", "봐줘 ", "끝말", "닫히지 않은 인자", "이 로그 봐줘 ", " 그리고 X 로 하자", "직접 친 글", "SDK 로 보낸 글"}
+	// 붙여넣은 글 안에 표지가 있으면 그 뒤의 사용자 글(" 그리고 X 로 하자")도 잘린다. 놓치는 쪽이라 받아들인다.
+	want := []string{"봐줘 ", " 그리고 이것", "봐줘 ", "끝말", "닫히지 않은 인자", "이 로그 봐줘 ",
+		"이 규칙으로 하자", "앞 글", "인자 a", "직접 친 글", "SDK 로 보낸 글"}
 	if !slices.Equal(got, want) {
 		t.Errorf("사용자 글 = %q\n기대 %q", got, want)
 	}
