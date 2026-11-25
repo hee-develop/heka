@@ -290,7 +290,7 @@ func write(e Env, dir string, in Input) error {
 	return err
 }
 
-// finish 는 색인을 다시 만들고, 원장에 한 줄 남기고, 데이터 폴더가 git 저장소면 커밋을 시도한다.
+// finish 는 색인을 다시 만들고, 원장에 한 줄 남기고, 데이터 폴더가 git 저장소면 ids 의 항목 파일만 커밋을 시도한다.
 // 모두 실패해도 호출한 일은 성공이다(자동화를 멈추지 않는다).
 func finish(e Env, event, moment, msg string, ids ...string) {
 	row := ledger.Row{Event: event, Moment: moment}
@@ -314,12 +314,48 @@ func finishRow(e Env, row ledger.Row, msg string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	for _, args := range [][]string{{"add", "-A", "--", "items"}, {"commit", "-m", msg, "--", "items"}} {
-		if err := exec.CommandContext(ctx, "git", append([]string{"-C", e.Home}, args...)...).Run(); err != nil {
+	git := func(args ...string) ([]byte, error) {
+		return exec.CommandContext(ctx, "git", append([]string{"-C", e.Home}, args...)...).Output()
+	}
+	// 이 호출이 다룬 항목의 파일(본 항목과 대기함)만 커밋한다. 손으로 고쳐 두고 아직 커밋하지 않은
+	// 다른 항목 파일이 엉뚱한 메시지의 커밋에 섞이지 않게 하려는 것이다.
+	var cand []string
+	for _, in := range row.Injected {
+		cand = append(cand, "items/"+in.ID+".md", pendingDir+"/"+in.ID+".md")
+	}
+	out, err := git(append([]string{"status", "--porcelain", "-z", "--untracked-files=all", "--"}, cand...)...)
+	if err != nil {
+		ledger.LogError(e.Home, event, "git status 실패: "+err.Error(), e.Now)
+		return
+	}
+	paths := changedPaths(out)
+	if len(paths) == 0 {
+		return
+	}
+	for _, args := range [][]string{append([]string{"add", "-A", "--"}, paths...), append([]string{"commit", "-m", msg, "--"}, paths...)} {
+		if _, err := git(args...); err != nil {
 			ledger.LogError(e.Home, event, "git "+args[0]+" 실패: "+err.Error(), e.Now)
 			return
 		}
 	}
+}
+
+// changedPaths 는 git status --porcelain -z 출력에서 바뀐 경로를 뽑는다.
+// 이름 바꾸기·복사 줄 뒤에 붙는 원래 경로는 건너뛴다.
+func changedPaths(out []byte) []string {
+	var paths []string
+	fields := strings.Split(string(out), "\x00")
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
+		if len(f) < 4 {
+			continue
+		}
+		paths = append(paths, f[3:])
+		if f[0] == 'R' || f[0] == 'C' {
+			i++
+		}
+	}
+	return paths
 }
 
 // Retire 는 항목 파일(items/<id>.md)을 지우고 색인을 다시 만들고 원장에 한 줄(이벤트 retire, 사유) 남긴다.

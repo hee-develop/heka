@@ -494,3 +494,83 @@ func TestNoGitIsFine(t *testing.T) {
 		t.Error("git 저장소가 아니면 아무것도 하지 않아야 함")
 	}
 }
+
+// initGit 은 데이터 폴더를 git 저장소로 만들고 git 을 부르는 함수를 돌려준다.
+func initGit(t *testing.T, e Env) func(args ...string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git 이 없음")
+	}
+	for k, v := range map[string]string{"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"} {
+		t.Setenv(k, v)
+	}
+	git := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", e.Home}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q")
+	return git
+}
+
+// 자동 커밋은 이번 등록의 파일만 담고, 손으로 고쳐 두고 커밋하지 않은 다른 항목은 담지 않는다.
+func TestGitCommitOnlyOwnFiles(t *testing.T) {
+	e := newEnv(t)
+	git := initGit(t, e)
+	mustAdd(t, e, base("hand-edited"), "added")
+	if err := os.WriteFile(filepath.Join(e.Home, "items/hand-edited.md"), []byte(read(e, "items/hand-edited.md")+"손으로 더한 줄.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	other := base("other")
+	other.Text, other.About = "커밋 메시지는 한국어로 쓴다.", []string{"커밋 메시지"}
+	mustAdd(t, e, other, "added")
+	if msg := git("log", "-1", "--format=%s"); msg != "add: other" {
+		t.Errorf("커밋 메시지 = %q", msg)
+	}
+	if files := git("show", "--name-only", "--format=", "HEAD"); files != "items/other.md" {
+		t.Errorf("커밋에 담긴 파일 = %q", files)
+	}
+	if st := git("status", "--porcelain", "--", "items"); st != "M items/hand-edited.md" {
+		t.Errorf("손으로 고친 파일은 커밋하지 않고 남아야 함: %q", st)
+	}
+}
+
+// 바꾸기는 지운 기존 항목과 새 항목을 함께 커밋하고, 그 밖의 항목은 담지 않는다.
+func TestGitCommitDecideReplace(t *testing.T) {
+	e, _ := pendingSetup(t)
+	git := initGit(t, e)
+	if _, err := Decide(e, "replace", "second", "first", ""); err != nil {
+		t.Fatal(err)
+	}
+	// first 는 git 저장소를 만들기 전에 등록돼 추적되지 않았으므로, 지워진 뒤에는 커밋할 것이 없다.
+	if files := git("show", "--name-status", "--format=", "HEAD"); files != "A\titems/second.md" {
+		t.Errorf("커밋에 담긴 파일 = %q", files)
+	}
+}
+
+// 이미 추적되는 기존 항목을 바꾸기로 지우면 그 삭제도 커밋에 담긴다.
+func TestGitCommitDecideReplaceTracked(t *testing.T) {
+	e := newEnv(t)
+	git := initGit(t, e)
+	first := Input{ID: "first", Text: "테스트는 푸시 전에 돌린다.", About: []string{"푸시 규칙"}, Scope: []string{"personal"}, Source: "doc"}
+	mustAdd(t, e, first, "added")
+	in := first
+	in.ID, in.Text = "second", "푸시 전에는 린트도 돌린다."
+	mustAdd(t, e, in, "pending")
+	if files := git("show", "--name-only", "--format=", "HEAD"); files != "items/_pending/second.md" {
+		t.Errorf("대기함 등록 커밋에 담긴 파일 = %q", files)
+	}
+	if _, err := Decide(e, "replace", "second", "first", ""); err != nil {
+		t.Fatal(err)
+	}
+	want := "D\titems/_pending/second.md\nD\titems/first.md\nA\titems/second.md"
+	if files := git("show", "--no-renames", "--name-status", "--format=", "HEAD"); files != want {
+		t.Errorf("커밋에 담긴 파일 = %q, 기대 %q", files, want)
+	}
+	if st := git("status", "--porcelain", "--", "items"); st != "" {
+		t.Errorf("items 에 남은 변경: %s", st)
+	}
+}
