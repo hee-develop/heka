@@ -161,28 +161,56 @@ func TestApplyMergeFlagsAndInvalid(t *testing.T) {
 		t.Errorf("플래그 값이 초안을 덮어야 함: %+v", it)
 	}
 
-	// 합친 결과가 검증을 통과하지 못하면 아무것도 바꾸지 않는다(about 이 비면 오류).
+	// 초안의 본문·주제어가 비면 두 항목의 것을 잇는다(본문은 대상 먼저, 주제어는 합집합).
 	e = newEnv(t)
-	add(t, e, register.Input{ID: "old", Text: "옛 글", Source: "doc"})
-	add(t, e, register.Input{ID: "new", Text: "새 글", Source: "ai"})
-	bad := mergeEntry("new", "old")
-	bad.Merged.About = nil
-	save(t, e, bad)
-	before, _ := os.ReadFile(filepath.Join(e.Home, "items", "old.md"))
-	if _, err := Apply(e, "new--old", DecMerge, Options{}); err == nil {
-		t.Fatal("검증 실패는 오류")
+	for _, in := range []register.Input{
+		{ID: "old", Text: "옛 글", Source: "doc", Body: "옛 본문", About: []string{"가", "나"}, Scope: []string{"personal"}},
+		{ID: "new", Text: "새 글", Source: "ai", Body: "새 본문", About: []string{"나", "다"}, Scope: []string{"personal"}},
+		{ID: "oldbare", Text: "옛 글", Source: "doc", About: []string{"가"}, Scope: []string{"personal"}},
+		{ID: "newbare", Text: "새 글", Source: "ai", About: []string{"가"}, Scope: []string{"personal"}},
+	} {
+		if err := register.Rewrite(e, in); err != nil {
+			t.Fatal(err)
+		}
 	}
-	after, _ := os.ReadFile(filepath.Join(e.Home, "items", "old.md"))
-	if !bytes.Equal(before, after) || !has(e, "new") {
-		t.Error("실패하면 아무것도 바뀌면 안 됨")
+	empty := mergeEntry("new", "old")
+	empty.Merged.Body, empty.Merged.About = "", nil
+	save(t, e, empty)
+	if _, err := Apply(e, "new--old", DecMerge, Options{}); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(e.Home, "review", "new--old.json")); err != nil {
-		t.Error("실패하면 검토 항목이 남아야 함")
+	it = parse(t, e, "old")
+	if !strings.HasPrefix(it.Body, "옛 본문\n\n새 본문\n\n합친 항목 new: 출처 ai") || !slices.Equal(it.About, []string{"가", "나", "다"}) {
+		t.Errorf("본문·주제어 이음: %q %v", it.Body, it.About)
+	}
+	// 둘 다 본문이 없으면 빈 글에 출처 줄만 남는다.
+	bare := mergeEntry("newbare", "oldbare")
+	bare.Merged.Body = ""
+	save(t, e, bare)
+	if _, err := Apply(e, "newbare--oldbare", DecMerge, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if it := parse(t, e, "oldbare"); strings.TrimSpace(it.Body) != "합친 항목 newbare: 출처 ai" {
+		t.Errorf("둘 다 비면: %q", it.Body)
+	}
+	// 플래그로 빈 본문을 명시하면 그대로 따른다.
+	if err := register.Rewrite(e, register.Input{ID: "new2", Text: "새 글", Source: "ai", Body: "새 본문2", About: []string{"x"}, Scope: []string{"personal"}}); err != nil {
+		t.Fatal(err)
+	}
+	ex := mergeEntry("new2", "old")
+	ex.Merged.Body = ""
+	save(t, e, ex)
+	if _, err := Apply(e, "new2--old", DecMerge, Options{Body: "", BodySet: true}); err != nil {
+		t.Fatal(err)
+	}
+	if it := parse(t, e, "old"); strings.TrimSpace(it.Body) != "합친 항목 new2: 출처 ai" {
+		t.Errorf("명시한 빈 본문: %q", it.Body)
 	}
 	// 초안이 없는 표본은 --text 없이는 합칠 수 없다.
-	save(t, e, Entry{ID: "new--old", Kind: KindSample, NewID: "new", TargetID: "old"})
-	if _, err := Apply(e, "new--old", DecMerge, Options{}); err == nil {
-		t.Error("초안이 없으면 오류")
+	add(t, e, register.Input{ID: "smp", Text: "표본 글", Source: "doc"})
+	save(t, e, Entry{ID: "smp--old", Kind: KindSample, NewID: "smp", TargetID: "old"})
+	if _, err := Apply(e, "smp--old", DecMerge, Options{}); err == nil || !strings.Contains(err.Error(), "초안이 없음") {
+		t.Errorf("초안이 없으면 오류: %v", err)
 	}
 }
 

@@ -124,6 +124,23 @@ func merge(e register.Env, en Entry, o Options) error {
 	if strings.TrimSpace(d.Text) == "" {
 		return errors.New("합칠 초안이 없음: --text 로 주입문을 주세요")
 	}
+	// 초안의 본문이나 주제어가 비면(그리고 플래그도 없으면) 두 항목의 것을 이어 지식이 사라지지 않게 한다.
+	if !o.BodySet && strings.TrimSpace(d.Body) == "" {
+		var parts []string
+		for _, b := range []string{target.Body, newIt.Body} {
+			if b = strings.Trim(b, "\n"); strings.TrimSpace(b) != "" {
+				parts = append(parts, b)
+			}
+		}
+		d.Body = strings.Join(parts, "\n\n")
+	}
+	if len(d.About) == 0 {
+		for _, a := range append(slices.Clone(target.About), newIt.About...) {
+			if !slices.Contains(d.About, a) {
+				d.About = append(d.About, a)
+			}
+		}
+	}
 	in := register.FromItem(target)
 	in.Text, in.About = strings.TrimSpace(d.Text), d.About
 	// 출처는 더 믿을 만한 쪽(user > doc > ai, 같으면 대상 쪽)을 따르고, 다른 쪽의 출처와 인용은 본문에 남긴다.
