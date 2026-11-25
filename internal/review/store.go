@@ -47,7 +47,9 @@ type Entry struct {
 	Candidates []string `json:"candidates,omitempty"`
 	Reason     string   `json:"reason,omitempty"`
 	Merged     *Merged  `json:"merged,omitempty"`
-	Created    string   `json:"created"`
+	// DraftProblem 이 있으면 판정 명령의 합친 초안이 기계 검사를 통과하지 못해 Merged 를 비웠다는 뜻이다.
+	DraftProblem string `json:"draft_problem,omitempty"`
+	Created      string `json:"created"`
 }
 
 var entryIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)

@@ -56,8 +56,9 @@ func runJudgeAdd(args []string, stdout, stderr io.Writer) int {
 
 type reviewEntryJSON struct {
 	review.Entry
-	New    *review.ItemView `json:"new"`
-	Target *review.ItemView `json:"target,omitempty"`
+	HeaderDiff []review.DiffField `json:"header_diff"`
+	New        *review.ItemView   `json:"new"`
+	Target     *review.ItemView   `json:"target,omitempty"`
 }
 
 // runReview 는 `heka review` 를 실행한다.
@@ -103,7 +104,10 @@ func runReview(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			entries = entries[:e.Cfg.Review.Batch]
 		}
 		for _, en := range entries {
-			j := reviewEntryJSON{Entry: en, New: review.View(e.Home, en.NewID)}
+			j := reviewEntryJSON{Entry: en, New: review.View(e.Home, en.NewID), HeaderDiff: review.HeaderDiff(e.Home, en)}
+			if j.HeaderDiff == nil {
+				j.HeaderDiff = []review.DiffField{}
+			}
 			if en.TargetID != "" {
 				j.Target = review.View(e.Home, en.TargetID)
 			}

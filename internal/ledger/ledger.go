@@ -90,6 +90,8 @@ type Verdict struct {
 	ID      string `json:"id"`
 	Verdict string `json:"verdict"`
 	Reason  string `json:"reason,omitempty"`
+	// DraftProblem 은 merge 의 합친 초안이 기계 검사를 통과하지 못한 까닭이다. 이때 초안은 버려진다.
+	DraftProblem string `json:"draft_problem,omitempty"`
 }
 
 // RegisterJudged 는 등록 판정(heka judge-add) 한 번의 기록이다. 새 항목 id 는 줄의 Injected 에 있다.

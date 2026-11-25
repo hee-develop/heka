@@ -556,3 +556,85 @@ func TestInteractive(t *testing.T) {
 		t.Errorf("빈 목록: %q", out.String())
 	}
 }
+
+func TestApplyMergeCheckHandling(t *testing.T) {
+	chkA := &item.Check{Target: "commit_message", Pattern: "^a", Mode: "block"}
+	chkB := &item.Check{Target: "commit_message", Pattern: "^b", Mode: "block"}
+	mk := func(t *testing.T, tc, nc *item.Check) register.Env {
+		e := newEnv(t)
+		for _, in := range []register.Input{
+			{ID: "old", Text: "옛 글", Source: "doc", Check: tc, About: []string{"옛"}, Scope: []string{"personal"}},
+			{ID: "new", Text: "새 글", Source: "doc", Check: nc, About: []string{"새"}, Scope: []string{"personal"}},
+		} {
+			if err := register.Rewrite(e, in); err != nil {
+				t.Fatal(err)
+			}
+		}
+		save(t, e, mergeEntry("new", "old"))
+		return e
+	}
+	e := mk(t, nil, chkA) // 대상에 없고 새 항목에 있으면 새 항목 것
+	if _, err := Apply(e, "new--old", DecMerge, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if it := parse(t, e, "old"); it.Check == nil || *it.Check != *chkA {
+		t.Errorf("새 항목의 check 를 써야 함: %+v", it.Check)
+	}
+	e = mk(t, chkA, nil) // 대상 것 유지
+	if _, err := Apply(e, "new--old", DecMerge, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if it := parse(t, e, "old"); it.Check == nil || *it.Check != *chkA {
+		t.Errorf("대상 check 유지: %+v", it.Check)
+	}
+	e = mk(t, chkA, chkA) // 같으면 합친다
+	if _, err := Apply(e, "new--old", DecMerge, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	e = mk(t, chkA, chkB) // 다르면 거절하고 아무것도 바꾸지 않는다
+	before, _ := os.ReadFile(filepath.Join(e.Home, "items", "old.md"))
+	_, err := Apply(e, "new--old", DecMerge, Options{})
+	if err == nil || err.Error() != "검사(check)가 서로 달라 자동으로 합칠 수 없음. 항목 파일을 직접 고치세요" {
+		t.Fatalf("오류 = %v", err)
+	}
+	after, _ := os.ReadFile(filepath.Join(e.Home, "items", "old.md"))
+	if !bytes.Equal(before, after) || !has(e, "new") {
+		t.Error("거절하면 아무것도 바뀌면 안 됨")
+	}
+}
+
+func TestHeaderDiffAndScreen(t *testing.T) {
+	e := newEnv(t)
+	for _, in := range []register.Input{
+		{ID: "old", Text: "옛 글", Source: "doc", Must: true, When: item.When{Action: item.List{"git.push"}}, Confirm: "true", About: []string{"옛"}, Scope: []string{"personal"}},
+		{ID: "new", Text: "새 글", Source: "user", Quote: "말", About: []string{"새"}, Scope: []string{"personal"}},
+		{ID: "same", Text: "같은 머리말", Source: "doc", Must: true, When: item.When{Action: item.List{"git.push"}}, Confirm: "true", About: []string{"같"}, Scope: []string{"personal"}},
+	} {
+		if err := register.Rewrite(e, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := HeaderDiff(e.Home, Entry{NewID: "new", TargetID: "old"})
+	want := []DiffField{{"must", "false", "true"}, {"when", "", "action=git.push"}, {"confirm", "false", "true"}, {"source", "user", "doc"}, {"quote", "말", ""}}
+	if !slices.Equal(got, want) {
+		t.Errorf("차이 = %+v", got)
+	}
+	if d := HeaderDiff(e.Home, Entry{NewID: "same", TargetID: "old"}); len(d) != 0 {
+		t.Errorf("머리말이 같으면 차이가 없어야 함: %+v", d) // same 은 id 만 다르다
+	}
+	if HeaderDiff(e.Home, Entry{NewID: "new"}) != nil {
+		t.Error("대상이 없으면 nil")
+	}
+
+	// 터미널 화면: 차이 한 줄이 보이고, 초안이 버려졌으면 m 이 보이지 않는다.
+	save(t, e, Entry{ID: "new--old", Kind: KindMerge, NewID: "new", TargetID: "old", DraftProblem: "초안에 '## 검사' 절이 없음"})
+	var out bytes.Buffer
+	if err := Interactive(e, strings.NewReader("m\nq\n"), &out, 5, nil); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "머리말 차이(합치면 새 항목 쪽 값이 사라짐): must(새 false / 옛 true); when(새 없음 / 옛 action=git.push)") ||
+		!strings.Contains(s, "합친 초안 없음: 초안에 '## 검사' 절이 없음") || strings.Contains(s, "[m]합치기") || !strings.Contains(s, "알 수 없는 키입니다.") {
+		t.Errorf("화면:\n%s", s)
+	}
+}

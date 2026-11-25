@@ -165,7 +165,7 @@ func TestRunVerdicts(t *testing.T) {
 	e := setup(t, "")
 	reply := `{"verdicts":[` +
 		`{"id":"old-conf","verdict":"conflict","reason":"반대로 지시"},` +
-		`{"id":"old-merge","verdict":"merge","reason":"같은 규칙","merged":{"text":"푸시 전에 테스트와 린트를 돌린다.","body":"합친 본문","about":["푸시 규칙"]}},` +
+		`{"id":"old-merge","verdict":"merge","reason":"같은 규칙","merged":{"text":"푸시 전에 테스트와 린트를 돌린다.","body":"본문 new-one 본문 old-merge 합친 본문","about":["푸시 규칙"]}},` +
 		`{"id":"old-sep","verdict":"separate","reason":"다른 내용"}]}`
 	cmd, inFile := script(t, reply)
 	e.Cfg.RegisterJudge.Command = cmd
@@ -188,7 +188,7 @@ func TestRunVerdicts(t *testing.T) {
 	if c := got["new-one--old-conf"]; c.Kind != "conflict" || c.TargetID != "old-conf" || c.Reason != "반대로 지시" || c.Created != "2026-11-26T09:00:00Z" {
 		t.Errorf("conflict = %+v", c)
 	}
-	if m := got["new-one--old-merge"]; m.Kind != "merge" || m.Merged == nil || m.Merged.Text != "푸시 전에 테스트와 린트를 돌린다." || m.Merged.Body != "합친 본문" {
+	if m := got["new-one--old-merge"]; m.Kind != "merge" || m.Merged == nil || m.Merged.Text != "푸시 전에 테스트와 린트를 돌린다." || m.Merged.Body != "본문 new-one 본문 old-merge 합친 본문" {
 		t.Errorf("merge = %+v", m)
 	}
 	// 모순은 곧바로 알린다. 합치기·따로는 알리지 않는다.
@@ -309,5 +309,79 @@ func TestVerdictJSONRoundTrip(t *testing.T) {
 	b, _ := json.Marshal(ledger.RegisterJudged{Verdicts: []ledger.Verdict{{ID: "a", Verdict: "separate"}}, MS: 5})
 	if string(b) != `{"verdicts":[{"id":"a","verdict":"separate"}],"ms":5}` {
 		t.Errorf("%s", b)
+	}
+}
+
+func TestDraftProblem(t *testing.T) {
+	a := "## 검사\n검사 절 내용입니다.\n\n## 배경\n배경 내용"
+	b := "## 예시\n예시 내용"
+	full := "## 검사\n검사 절 내용입니다.\n\n## 배경\n배경 내용\n\n## 예시\n예시 내용"
+	cases := []struct {
+		name, draft, want string
+		orig              []string
+	}{
+		{"통과", full, "", []string{a, b}},
+		{"절 누락", "## 배경\n배경 내용\n\n## 예시\n예시 내용 그리고 긴 글을 더 붙여서 길이는 충분하다 충분하다 충분하다", "초안에 '## 검사' 절이 없음", []string{a, b}},
+		{"길이 부족", "## 검사\n짧음", "초안 본문이 원본의 ", []string{"## 검사\n" + strings.Repeat("가", 100)}},
+		{"정확히 70%", strings.Repeat("가", 70), "", []string{strings.Repeat("가", 100)}},
+		{"70% 미만", strings.Repeat("가", 69), "초안 본문이 원본의 69%", []string{strings.Repeat("가", 100)}},
+		{"둘 다 빔", "", "", []string{"", "\n"}},
+		{"원본은 비고 초안만 있음", "내용", "", []string{""}},
+	}
+	for _, c := range cases {
+		got := DraftProblem(c.draft, c.orig...)
+		if !strings.HasPrefix(got, c.want) || (c.want == "" && got != "") {
+			t.Errorf("%s: %q, 기대 %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestRunMergeDraftMachineCheck(t *testing.T) {
+	e := newEnv(t, "")
+	r, err := register.Add(e, register.Input{ID: "old", Text: "푸시 전에 테스트를 돌린다.", About: []string{"푸시 규칙"}, Scope: []string{"personal"}, Source: "doc", Body: "## 검사\n푸시 전에 확인할 것들"})
+	if err != nil || r.Status != "added" {
+		t.Fatal(r, err)
+	}
+	add(t, e, "new-one", "푸시 전에 린트를 돌린다.", "doc", "푸시 규칙")
+	// 초안이 '## 검사' 절을 빠뜨린 경우
+	reply := `{"verdicts":[{"id":"old","verdict":"merge","reason":"같은 규칙","merged":{"text":"합친 글","body":"절 없는 짧은 글","about":["푸시 규칙"]}}]}`
+	cmd, _ := script(t, reply)
+	e.Cfg.RegisterJudge.Command = cmd
+	if err := Run(e, &bytes.Buffer{}, "new-one"); err != nil {
+		t.Fatal(err)
+	}
+	en, ok := entries(e)["new-one--old"]
+	if !ok || en.Kind != "merge" || en.Merged != nil || en.DraftProblem != "초안에 '## 검사' 절이 없음" {
+		t.Fatalf("검토 항목 = %+v", en)
+	}
+	row := lastRow(t, e, "register_judge")
+	if len(row.RegJudge.Verdicts) != 1 || row.RegJudge.Verdicts[0].Verdict != "merge" || row.RegJudge.Verdicts[0].DraftProblem != en.DraftProblem {
+		t.Errorf("원장 = %+v", row.RegJudge.Verdicts)
+	}
+	// 통과하는 초안은 그대로 남는다.
+	reply = `{"verdicts":[{"id":"old","verdict":"merge","reason":"같은 규칙","merged":{"text":"합친 글","body":"## 검사\n푸시 전에 확인할 것들 그리고 린트까지","about":["푸시 규칙"]}}]}`
+	cmd, _ = script(t, reply)
+	e.Cfg.RegisterJudge.Command = cmd
+	if err := Run(e, &bytes.Buffer{}, "new-one"); err != nil {
+		t.Fatal(err)
+	}
+	if en := entries(e)["new-one--old"]; en.Merged == nil || en.DraftProblem != "" {
+		t.Errorf("통과한 초안 = %+v", en)
+	}
+}
+
+// 한 번의 judge-add 에서 모순이 여러 건이어도 알림은 한 번이고 건수를 적는다.
+func TestRunNotifiesOncePerJudge(t *testing.T) {
+	notes := filepath.Join(t.TempDir(), "notes.txt")
+	e := setup(t, "")
+	cmd, _ := script(t, `{"verdicts":[{"id":"old-conf","verdict":"conflict","reason":"r"},{"id":"old-merge","verdict":"conflict","reason":"r"},{"id":"old-sep","verdict":"separate","reason":"r"}]}`)
+	e.Cfg.RegisterJudge.Command = cmd
+	e.Cfg.Review.NotifyCommand = []string{"sh", "-c", `echo "$0" >> ` + notes}
+	if err := Run(e, &bytes.Buffer{}, "new-one"); err != nil {
+		t.Fatal(err)
+	}
+	n, _ := os.ReadFile(notes)
+	if string(n) != "heka: 새 항목 new-one 가 2건과 모순으로 판정됐습니다. 세션에서 'heka 검토해줘', 터미널에서 heka review\n" {
+		t.Errorf("알림 = %q", n)
 	}
 }

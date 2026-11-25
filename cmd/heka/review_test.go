@@ -31,7 +31,7 @@ func addItem(t *testing.T, id, text string) {
 // add -> judge-add(가짜 명령) -> review --json -> review apply 흐름.
 func TestJudgeAddReviewFlow(t *testing.T) {
 	home := newHome(t)
-	reply := `{"verdicts":[{"id":"first","verdict":"merge","reason":"같은 규칙","merged":{"text":"푸시 전에 테스트와 린트를 돌린다.","body":"합친 본문","about":["푸시 규칙"]}}]}`
+	reply := `{"verdicts":[{"id":"first","verdict":"merge","reason":"같은 규칙","merged":{"text":"푸시 전에 테스트와 린트를 돌린다.","body":"본문 first 본문 second 합친 본문","about":["푸시 규칙"]}}]}`
 	cfg := "global_scopes: [personal]\nregister_judge:\n  command: " + fakeCommand(t, reply) + "\nreview:\n  batch: 1\n"
 	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
@@ -52,10 +52,11 @@ func TestJudgeAddReviewFlow(t *testing.T) {
 	var got struct {
 		Total, OldestDays, Shown int
 		Entries                  []struct {
-			ID, Kind string
-			New      struct{ ID, Text, Body, Source string }
-			Target   struct{ ID, Text string }
-			Merged   struct{ Text string }
+			ID, Kind   string
+			New        struct{ ID, Text, Body, Source string }
+			Target     struct{ ID, Text string }
+			Merged     struct{ Text string }
+			HeaderDiff []struct{ Field, New, Target string } `json:"header_diff"`
 		}
 	}
 	if code != 0 || json.Unmarshal([]byte(out), &got) != nil || got.Total != 1 || got.Shown != 1 || len(got.Entries) != 1 {
@@ -64,6 +65,9 @@ func TestJudgeAddReviewFlow(t *testing.T) {
 	en := got.Entries[0]
 	if en.ID != "second--first" || en.Kind != "merge" || en.New.ID != "second" || en.New.Body != "본문 second" || en.Target.ID != "first" || en.Merged.Text != "푸시 전에 테스트와 린트를 돌린다." {
 		t.Errorf("항목 = %+v", en)
+	}
+	if en.HeaderDiff == nil || len(en.HeaderDiff) != 0 {
+		t.Errorf("머리말이 같으면 header_diff 는 빈 배열: %v", en.HeaderDiff)
 	}
 	// 터미널이 아니면 --json 을 쓰라고 안내한다.
 	if code, _, errb := runCmd("review"); code != 1 || !strings.Contains(errb, "heka review --json") {

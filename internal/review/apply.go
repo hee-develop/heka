@@ -143,6 +143,13 @@ func merge(e register.Env, en Entry, o Options) error {
 	}
 	in := register.FromItem(target)
 	in.Text, in.About = strings.TrimSpace(d.Text), d.About
+	// 검사(check)는 대상 것을 쓰되, 대상에 없고 새 항목에 있으면 새 항목 것을 쓴다. 둘 다 있고 다르면 합치지 않는다.
+	switch {
+	case target.Check == nil && newIt.Check != nil:
+		in.Check = newIt.Check
+	case target.Check != nil && newIt.Check != nil && *target.Check != *newIt.Check:
+		return errors.New("검사(check)가 서로 달라 자동으로 합칠 수 없음. 항목 파일을 직접 고치세요")
+	}
 	// 출처는 더 믿을 만한 쪽(user > doc > ai, 같으면 대상 쪽)을 따르고, 다른 쪽의 출처와 인용은 본문에 남긴다.
 	keep, other := target, newIt
 	if trust[newIt.Source] > trust[target.Source] {

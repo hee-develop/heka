@@ -21,9 +21,12 @@ const (
 	notifyTimeout  = 30 * time.Second
 )
 
-// ConflictText 는 모순 판정을 곧바로 알리는 글이다.
-func ConflictText(newID, target string) string {
-	return fmt.Sprintf("heka: 새 항목 %s 가 %s 과 모순으로 판정됐습니다. 세션에서 'heka 검토해줘', 터미널에서 heka review", newID, target)
+// ConflictText 는 모순 판정을 곧바로 알리는 글이다. 모순이 여러 건이면 건수를 적는다.
+func ConflictText(newID string, targets []string) string {
+	if len(targets) == 1 {
+		return fmt.Sprintf("heka: 새 항목 %s 가 %s 과 모순으로 판정됐습니다. 세션에서 'heka 검토해줘', 터미널에서 heka review", newID, targets[0])
+	}
+	return fmt.Sprintf("heka: 새 항목 %s 가 %d건과 모순으로 판정됐습니다. 세션에서 'heka 검토해줘', 터미널에서 heka review", newID, len(targets))
 }
 
 // PendingText 는 검토 대기를 알리는 글이다.

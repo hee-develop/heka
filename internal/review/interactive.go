@@ -121,6 +121,12 @@ func printEntry(home string, out io.Writer, en Entry) {
 			fmt.Fprintf(out, "  본문: %s\n", strings.ReplaceAll(v.Body, "\n", "\n    "))
 		}
 	}
+	if en.DraftProblem != "" {
+		fmt.Fprintf(out, "합친 초안 없음: %s. 세션에서 'heka 검토해줘' 로 초안을 새로 쓰세요.\n", en.DraftProblem)
+	}
+	if l := diffLine(HeaderDiff(home, en)); l != "" {
+		fmt.Fprintf(out, "머리말 차이(합치면 새 항목 쪽 값이 사라짐): %s\n", l)
+	}
 	if m := en.Merged; m != nil && strings.TrimSpace(m.Text) != "" {
 		fmt.Fprintf(out, "합친 초안:\n  주입문: %s\n  주제어: %s\n", m.Text, strings.Join(m.About, ", "))
 		if strings.TrimSpace(m.Body) != "" {

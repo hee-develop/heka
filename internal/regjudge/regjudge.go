@@ -138,6 +138,33 @@ func firstObject(s string) (string, bool) {
 	return "", false
 }
 
+// DraftProblem 은 합친 초안 본문이 두 원본 본문에서 잃은 것이 있는지 기계로 본다. 문제가 없으면 빈 글이다.
+// (a) 원본 본문의 `## ` 로 시작하는 머리 줄이 초안에 모두 있어야 하고,
+// (b) 초안 본문의 길이(룬)가 두 원본 본문 중 긴 쪽의 70% 이상이어야 한다. 두 본문이 다 비면 검사하지 않는다.
+func DraftProblem(draftBody string, originals ...string) string {
+	have := map[string]bool{}
+	for _, l := range strings.Split(draftBody, "\n") {
+		have[strings.TrimRight(l, " \t\r")] = true
+	}
+	longest := 0
+	for _, b := range originals {
+		longest = max(longest, len([]rune(strings.TrimSpace(b))))
+		for _, l := range strings.Split(b, "\n") {
+			if l = strings.TrimRight(l, " \t\r"); strings.HasPrefix(l, "## ") && !have[l] {
+				return fmt.Sprintf("초안에 '%s' 절이 없음", l)
+			}
+		}
+	}
+	if longest == 0 {
+		return ""
+	}
+	n := len([]rune(strings.TrimSpace(draftBody)))
+	if n*10 < longest*7 {
+		return fmt.Sprintf("초안 본문이 원본의 %d%%", n*100/longest)
+	}
+	return ""
+}
+
 // Run 은 `heka judge-add <id>` 의 일이다. 새 항목(items/<id>.md)과 후보를 읽어 판정 명령을 부르고
 // 결과를 검토 목록과 원장에 쓴다. 새 항목을 읽을 수 없을 때만 오류다. 모순 판정은 곧바로 알린다(알림 글은 out 에도 쓴다).
 func Run(e register.Env, out io.Writer, id string) error {
@@ -186,6 +213,10 @@ func Run(e register.Env, out io.Writer, id string) error {
 	created := e.Now.UTC().Format(time.RFC3339)
 	var unjudged []string
 	var conflicts []string
+	byID := map[string]*item.Item{}
+	for _, it := range items {
+		byID[it.ID] = it
+	}
 	for _, cid := range ids {
 		v, ok := got[cid]
 		if !ok {
@@ -203,6 +234,10 @@ func Run(e register.Env, out io.Writer, id string) error {
 			en.Merged = &review.Merged{Text: v.Merged.Text, Body: v.Merged.Body, About: v.Merged.About}
 			if en.Merged.About == nil {
 				en.Merged.About = []string{}
+			}
+			if prob := DraftProblem(v.Merged.Body, newIt.Body, byID[cid].Body); prob != "" {
+				en.Merged, en.DraftProblem = nil, prob // 초안은 버린다. 세션에서 새로 쓴다
+				rec.Verdicts[len(rec.Verdicts)-1].DraftProblem = prob
 			}
 		case "conflict":
 			en.Kind = review.KindConflict
@@ -224,8 +259,8 @@ func Run(e register.Env, out io.Writer, id string) error {
 	} else {
 		review.Remove(e.Home, unjudgedID)
 	}
-	for _, cid := range conflicts {
-		_ = review.Notify(e, out, review.ConflictText(id, cid), "conflict", 0)
+	if len(conflicts) > 0 { // 판정 한 번에 알림은 한 번
+		_ = review.Notify(e, out, review.ConflictText(id, conflicts), "conflict", len(conflicts))
 	}
 	row := ledger.Row{Event: "register_judge", Moment: "judge-add", Injected: []ledger.Injected{{ID: id}}, RegJudge: rec}
 	if failure != "" {
