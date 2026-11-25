@@ -131,12 +131,23 @@ func TestUserTextsAskAndQueued(t *testing.T) {
 			},
 			map[string]any{"고른 라벨만?": map[string]any{"notes": "메모 글", "preview": "AI 미리보기"}, "여럿?": "모양이 다른 메모"},
 		),
-		// 같은 줄에서 질문 도구 결과 앞에 놓인 글도 읽는다.
+		// 질문 도구 결과가 든 줄에서는 답만 읽고 같은 줄의 다른 글은 읽지 않는다.
 		askUse("ask2"),
 		msg("user", []any{
 			map[string]any{"type": "text", "text": "결과 앞의 글"},
 			map[string]any{"type": "tool_result", "tool_use_id": "ask2", "content": "The user answered: ..."},
 		}, map[string]any{"toolUseResult": map[string]any{"questions": []any{question("둘째?", false, "셋")}, "answers": map[string]any{"둘째?": "둘째 답"}}}),
+		// 질문 글이 겹치면 다른 질문의 라벨도 라벨로 본다. multiSelect 가 없으면 여러 개를 고르는 질문으로 다룬다.
+		askUse("ask3"),
+		askResultLine("ask3",
+			[]any{question("겹침?", false, "가"), question("겹침?", false, "규칙: 늘 X 한다"), map[string]any{"question": "키 없음?", "options": []any{map[string]any{"label": "라"}}}},
+			map[string]any{"겹침?": "규칙: 늘 X 한다", "키 없음?": "라, 키 없는 질문의 직접 글"}, nil),
+		// 질문 도구 결과와 다른 도구의 결과가 한 줄에 섞이면 읽지 않는다.
+		askUse("ask4"),
+		msg("user", []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "ask4", "content": "The user answered: ..."},
+			map[string]any{"type": "tool_result", "tool_use_id": "bash0", "content": "출력"},
+		}, map[string]any{"toolUseResult": map[string]any{"questions": []any{question("섞임?", false, "셋")}, "answers": map[string]any{"섞임?": "섞인 줄의 답"}}}),
 		// 질문 도구가 아닌 도구의 결과는 같은 모양이어도 읽지 않는다.
 		msg("assistant", []any{map[string]any{"type": "tool_use", "id": "bash1", "name": "Bash", "input": map[string]any{}}}, nil),
 		askResultLine("bash1", []any{question("가짜?", false, "셋")}, map[string]any{"가짜?": "AI 가 만든 출력"}, nil),
@@ -159,8 +170,8 @@ func TestUserTextsAskAndQueued(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"직접 친 답, 쉼표 포함", "메모 글", "예, 그렇게 하되 테스트도", "직접 친 덧붙임", `"직접 글, 가, 그 뒤"`, "배열 속 직접 친 글",
-		"결과 앞의 글", "둘째 답",
+		"직접 친 답, 쉼표 포함", "메모 글", "예, 그렇게 하되 테스트도", "직접 친 덧붙임", "직접 글, 가, 그 뒤", "배열 속 직접 친 글",
+		"둘째 답", "키 없는 질문의 직접 글",
 		"작업 중 보낸 말", "이미지와 보낸 말",
 	}
 	if !slices.Equal(got, want) {
@@ -169,7 +180,8 @@ func TestUserTextsAskAndQueued(t *testing.T) {
 }
 
 func TestTypedAnswer(t *testing.T) {
-	labels := []string{"가", "가, 나", "다 (추천)"}
+	labels := map[string]bool{"가": true, "가, 나": true, "다 (추천)": true, `항상 "테스트", 먼저`: true,
+		"a": true, "b, 항상 테스트를 먼저 작성한다": true, `a, "b`: true}
 	for _, c := range []struct {
 		ans   string
 		multi bool
@@ -182,9 +194,17 @@ func TestTypedAnswer(t *testing.T) {
 		{"가", true, ""},
 		{"가, 다 (추천)", true, ""},
 		{`"가, 나", 다 (추천)`, true, ""},
+		{"가, 나", true, "나"}, // 라벨 "가" 를 고르고 "나" 를 직접 쳤다
 		{"다 (추천), 직접", true, "직접"},
-		{`다 (추천), "직접, 가, 그 뒤"`, true, `"직접, 가, 그 뒤"`},
-		{"직접, 가", true, "직접, 가"},
+		{`다 (추천), "직접, 가, 그 뒤"`, true, "직접, 가, 그 뒤"},
+		{`"항상 ""테스트"", 먼저"`, true, ""},
+		{`a, "b, 항상 테스트를 먼저 작성한다"`, true, ""}, // 라벨이 칸 경계를 넘어 맞지 않는다
+		{`"따옴표 ""안"" 글, 끝"`, true, `따옴표 "안" 글, 끝`},
+		{"직접, 가", true, ""},   // 직접 친 글은 맨 뒤에만 온다
+		{"직접, 더", true, ""},   // 남은 칸이 여럿이면 가릴 수 없다
+		{`"닫히지 않음`, true, ""}, // 감싼 칸이 닫히지 않았다
+		{`"감쌈"뒤`, true, ""},
+		{"가, ", true, ""},
 		{"가나", true, "가나"},
 		{"", true, ""},
 	} {

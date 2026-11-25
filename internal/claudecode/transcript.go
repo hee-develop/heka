@@ -52,7 +52,7 @@ type contentPart struct {
 type askResult struct {
 	Questions []struct {
 		Question    string `json:"question"`
-		MultiSelect bool   `json:"multiSelect"`
+		MultiSelect *bool  `json:"multiSelect"` // 없으면 여러 개를 고르는 질문으로 다룬다
 		Options     []struct {
 			Label string `json:"label"`
 		} `json:"options"`
@@ -138,17 +138,27 @@ func lineTexts(line []byte, asks map[string]bool) []string {
 	if json.Unmarshal(tl.Message.Content, &parts) != nil {
 		return contentTexts(tl.Message.Content)
 	}
+	// tool_result 가 든 줄은 askTool 의 결과만 있을 때 그 답만 읽는다. 같은 줄의 다른 글은 Claude Code 가
+	// 붙인 안내일 수 있고, toolUseResult 는 줄마다 하나라 다른 도구의 결과와 섞이면 누구의 것인지 가릴 수 없다.
+	var ask, other bool
 	var texts []string
 	for _, p := range parts {
 		switch p.Type {
 		case "tool_result":
-			if !asks[p.ToolUseID] {
-				return nil
+			if asks[p.ToolUseID] {
+				ask = true
+			} else {
+				other = true
 			}
-			texts = append(texts, askAnswers(tl.ToolUseResult)...)
 		case "text":
 			texts = append(texts, p.Text)
 		}
+	}
+	switch {
+	case other:
+		return nil
+	case ask:
+		return askAnswers(tl.ToolUseResult)
 	}
 	return texts
 }
@@ -173,26 +183,30 @@ func contentTexts(raw json.RawMessage) []string {
 }
 
 // askAnswers 는 askTool 결과에서 사용자가 직접 친 답과 메모를 돌려준다. 질문 순서를 따른다.
+// 라벨은 결과에 든 모든 질문의 것을 함께 본다. answers 는 질문 글이 키라, 질문 글이 겹치면 다른 질문의 라벨이 답으로 올 수 있다.
 func askAnswers(raw json.RawMessage) []string {
 	var res askResult
 	if json.Unmarshal(raw, &res) != nil {
 		return nil
 	}
+	labels := map[string]bool{}
+	for _, q := range res.Questions {
+		for _, o := range q.Options {
+			labels[o.Label] = true
+		}
+	}
 	var out []string
 	for _, q := range res.Questions {
-		labels := make([]string, len(q.Options))
-		for i, o := range q.Options {
-			labels[i] = o.Label
-		}
 		var one string
 		var many []string
 		if a := res.Answers[q.Question]; json.Unmarshal(a, &one) == nil {
-			if t := typedAnswer(one, labels, q.MultiSelect); t != "" {
+			multi := q.MultiSelect == nil || *q.MultiSelect
+			if t := typedAnswer(one, labels, multi); t != "" {
 				out = append(out, t)
 			}
 		} else if json.Unmarshal(a, &many) == nil {
 			for _, m := range many {
-				if !slices.Contains(labels, m) && m != "" {
+				if m != "" && !labels[m] {
 					out = append(out, m)
 				}
 			}
@@ -207,45 +221,68 @@ func askAnswers(raw json.RawMessage) []string {
 	return out
 }
 
-// typedAnswer 는 답에서 고른 선택지 라벨을 빼고 남은 글을 원문 그대로 돌려준다.
+// typedAnswer 는 답에서 고른 선택지 라벨을 빼고 사용자가 직접 친 글을 돌려준다. 없거나 가릴 수 없으면 빈 글이다.
 // 하나를 고르는 질문의 답은 라벨 하나이거나 직접 친 글 하나라, 답 전체가 라벨과 같을 때만 뺀다.
-// 여러 개를 고르는 질문의 답은 고른 라벨들 뒤에 직접 친 글을 ", " 로 이은 문자열이고,
-// 칸 안에 ", " 가 있으면 그 칸을 큰따옴표로 감싼다. 그래서 앞에서부터 라벨 칸만 떼고 나머지는 자르지 않는다.
-// 남은 글이 큰따옴표로 감싸여 있어도 그대로 둔다. 인용 대조는 포함 여부로 보므로 안쪽 글이 그대로 맞는다.
-func typedAnswer(ans string, labels []string, multi bool) string {
+// 여러 개를 고르는 질문의 답은 고른 라벨들 뒤에 직접 친 글 한 칸을 ", " 로 이은 것이고, 쉼표가 든 칸은 큰따옴표로 감싼다.
+// 그래서 칸으로 나눈 뒤 앞의 라벨 칸을 떼고, 남은 칸이 꼭 하나일 때만 그 칸을 돌려준다.
+// 나눌 수 없거나 남은 칸이 여럿이면 형식을 잘못 읽은 것이라, AI 가 쓴 라벨이 섞이지 않도록 아무것도 돌려주지 않는다.
+func typedAnswer(ans string, labels map[string]bool, multi bool) string {
 	if !multi {
-		if slices.Contains(labels, ans) {
+		if labels[ans] {
 			return ""
 		}
 		return ans
 	}
-	const sep = ", "
-	rest := ans
-	for rest != "" {
-		n := labelCell(rest, labels, sep)
-		if n == 0 {
-			break
-		}
-		rest = strings.TrimPrefix(rest[n:], sep)
+	cells, ok := splitCells(ans)
+	if !ok {
+		return ""
 	}
-	return rest
+	for len(cells) > 0 && labels[cells[0]] {
+		cells = cells[1:]
+	}
+	if len(cells) != 1 {
+		return ""
+	}
+	return cells[0]
 }
 
-// labelCell 은 rest 가 라벨 하나(그대로거나 큰따옴표로 감싼 것)로 된 칸으로 시작하면 그 칸의 길이를, 아니면 0 을 돌려준다.
-// 칸은 rest 의 끝이나 sep 앞에서 끝나야 한다. 길이가 같은 라벨이 여럿 맞아도 길이만 쓰므로 상관없다.
-func labelCell(rest string, labels []string, sep string) int {
-	best := 0
-	for _, l := range labels {
-		if l == "" {
-			continue
-		}
-		for _, cell := range []string{l, `"` + l + `"`} {
-			if len(cell) > best && strings.HasPrefix(rest, cell) && (len(rest) == len(cell) || strings.HasPrefix(rest[len(cell):], sep)) {
-				best = len(cell)
+// splitCells 는 여러 개를 고른 답을 칸으로 나눈다. 칸은 ", " 로 이어지고, 큰따옴표로 시작하는 칸은
+// 닫는 큰따옴표까지이며 그 안의 "" 는 " 하나로 읽는다. 감싼 칸이 닫히지 않거나 칸 사이가 ", " 가 아니면 ok 는 거짓이다.
+func splitCells(s string) (cells []string, ok bool) {
+	const sep = ", "
+	for {
+		var cell string
+		if strings.HasPrefix(s, `"`) {
+			var b strings.Builder
+			i := 1
+			for {
+				j := strings.IndexByte(s[i:], '"')
+				if j < 0 {
+					return nil, false
+				}
+				b.WriteString(s[i : i+j])
+				i += j + 1
+				if !strings.HasPrefix(s[i:], `"`) {
+					break
+				}
+				b.WriteByte('"')
+				i++
 			}
+			cell, s = b.String(), s[i:]
+		} else if i := strings.Index(s, sep); i >= 0 {
+			cell, s = s[:i], s[i:]
+		} else {
+			cell, s = s, ""
 		}
+		cells = append(cells, cell)
+		if s == "" {
+			return cells, true
+		}
+		if !strings.HasPrefix(s, sep) || len(s) == len(sep) {
+			return nil, false
+		}
+		s = s[len(sep):]
 	}
-	return best
 }
 
 func hasAnyPrefix(s string, prefixes []string) bool {
