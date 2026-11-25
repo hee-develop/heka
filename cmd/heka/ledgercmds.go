@@ -82,6 +82,19 @@ func whyLine(r ledger.Row) string {
 	if p := r.Pick; p != nil {
 		line += " | " + pickLine(p)
 	}
+	if rj := r.RegJudge; rj != nil {
+		var vs []string
+		for _, v := range rj.Verdicts {
+			vs = append(vs, v.ID+" "+v.Verdict)
+		}
+		line += " | 등록 판정: " + strings.Join(vs, "; ")
+		if rj.Error {
+			line += " (오류)"
+		}
+	}
+	if r.Entry != "" {
+		line += " | 검토: " + r.Entry
+	}
 	if len(r.Checks) > 0 {
 		var cs []string
 		for _, c := range r.Checks {

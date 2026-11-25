@@ -17,8 +17,9 @@ const usage = `사용법: heka <명령>
   select    순간 하나에 넣을 항목을 골라 JSON 으로 출력한다
   resolve   도구 호출 하나를 동작 이름으로 해석해 JSON 으로 출력한다
   find      항목을 찾는다 (낱말 또는 작업을 설명한 문장, --json 지원)
-  add       항목을 등록한다 (비슷한 항목이 있으면 대기함)
-  pending   대기함을 보고 결정한다 (fix|replace|keep|drop)
+  add       항목을 등록한다 (비슷한 항목이 있어도 등록하고, 같은 id 만 거절한다. 후보가 있으면 뒤에서 판정을 띄운다)
+  judge-add 등록한 항목 하나를 비슷한 후보와 견주어 판정한다 (heka judge-add <id>, 등록이 띄운다)
+  review    판정이 올린 검토 목록을 보고 결정한다 (--json [--all], apply <id> <merge|keep|drop-new|drop-old>, --notify)
   why       원장의 최근 주입을 사람이 읽는 꼴로 보인다 (--session, --last, --id, --json)
   list      항목 목록 (--json, --agent, --must, --flagged, --find-only, --violated)
   stats     항목 하나의 주입·탈락·검사에 걸림·flag 횟수 (--json)
@@ -55,8 +56,10 @@ func runIn(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runFind(args[1:], stdout, stderr)
 	case "add":
 		return runAdd(args[1:], stdout, stderr)
-	case "pending":
-		return runPending(args[1:], stdout, stderr)
+	case "judge-add":
+		return runJudgeAdd(args[1:], stdout, stderr)
+	case "review":
+		return runReview(args[1:], stdin, stdout, stderr)
 	case "why":
 		return runWhy(args[1:], stdout, stderr)
 	case "list":

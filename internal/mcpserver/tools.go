@@ -26,7 +26,7 @@ var tools = []tool{
 			"scopes": strs("범위. 없으면 서버의 작업 폴더에서 정한다"),
 			"budget": map[string]any{"type": "integer", "description": "돌려줄 글의 토큰 상한. 빠진 항목이 있으면 늘려 다시 부른다"},
 		}, "query")},
-	{"heka_add", "사용자가 규칙·교정·용어·결정을 말했을 때 등록한다. source 는 사용자가 한 말이면 user, 읽은 문서에서 뽑았으면 doc, 추측이면 ai. user 면 quote 에 사용자의 말을 그대로 적는다(세션 기록과 대조해 확인한다). 비슷한 항목이 있으면 대기함에 들어가고 후보를 돌려주니, 사용자에게 고치기·바꾸기·따로 두기 중 무엇으로 할지 물은 뒤 heka_pending 을 부른다.",
+	{"heka_add", "사용자가 규칙·교정·용어·결정을 말했을 때 등록한다. source 는 사용자가 한 말이면 user, 읽은 문서에서 뽑았으면 doc, 추측이면 ai. user 면 quote 에 사용자의 말을 그대로 적는다(세션 기록과 대조해 확인한다). 비슷한 항목이 있어도 등록되며(같은 id 만 거절), 중복·모순 판정은 뒤에서 돌고 사람이 나중에 검토한다. 사용자에게 물을 필요는 없다.",
 		obj(map[string]any{
 			"id":   str("영문 소문자·숫자·하이픈으로 된 id"),
 			"text": str("주입문. 한두 문장이고 이것만 읽어도 행동할 수 있어야 한다"),
@@ -43,9 +43,6 @@ var tools = []tool{
 				"not_pattern": str("정규식"), "mode": str("block|log")}),
 			"body": str("배경과 예시. 조회할 때만 읽힌다"),
 		}, "id", "text", "about", "scope", "source")},
-	{"heka_pending", "heka_add 가 대기함에 둔 항목을 다룬다. 사용자가 정한 결정을 적용하는 데 쓴다. action: list(목록), fix(기존 항목 target 의 내용을 고침), replace(기존 항목 target 을 지우고 새 항목 등록), keep(다른 항목으로 등록, reason 필요), drop(대기함에서 지움).",
-		obj(map[string]any{"action": str("list|fix|replace|keep|drop"), "id": str("대기함 항목 id"), "target": str("fix·replace 에서 기존 항목 id"),
-			"reason": str("keep 에서 다른 항목이라는 이유")}, "action")},
 	{"heka_flag", "heka 항목이 틀렸거나 낡았거나 쓸모없다는 것을 알았을 때 표시를 남긴다. 항목 파일은 고치지 않고 기록만 하며, 사람이 점검할 때 본다.",
 		obj(map[string]any{"id": str("항목 id"), "reason": str("무엇이 틀렸는지 또는 왜 낡았는지")}, "id", "reason")},
 }

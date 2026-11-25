@@ -224,30 +224,6 @@ func (s *Server) run(name string, args json.RawMessage) (msg string, isErr bool,
 			return "", false, err
 		}
 		return r.Text(), r.Status == "invalid", nil
-	case "heka_pending":
-		var a struct{ Action, ID, Target, Reason string }
-		if err := strict(&a); err != nil {
-			return "", false, err
-		}
-		if a.Action == "" || a.Action == "list" {
-			list, err := register.Pending(env)
-			if err != nil {
-				return "", false, err
-			}
-			if len(list) == 0 {
-				return "대기함이 비어 있습니다.", false, nil
-			}
-			var b strings.Builder
-			for _, p := range list {
-				fmt.Fprintf(&b, "[%s] %s\n", p.ID, p.Text)
-				for _, c := range p.Candidates {
-					fmt.Fprintf(&b, "  - %s: %s (%s)\n", c.ID, c.Text, c.Reason)
-				}
-			}
-			return b.String(), false, nil
-		}
-		msg, err := register.Decide(env, a.Action, a.ID, a.Target, a.Reason)
-		return msg, false, err
 	case "heka_flag":
 		var a struct{ ID, Reason string }
 		if err := strict(&a); err != nil {

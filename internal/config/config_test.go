@@ -132,6 +132,43 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
+func TestRegisterJudgeAndReviewDefaults(t *testing.T) {
+	c, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rj, rv := c.RegisterJudge, c.Review
+	if len(rj.Command) != 0 || rj.Timeout != 120*time.Second || rj.Candidates != 5 || rj.Instruction != DefaultRegisterJudgeInstruction {
+		t.Errorf("register_judge 기본값: %+v", rj)
+	}
+	if len(rv.NotifyCommand) != 0 || rv.NotifyMin != 5 || rv.NotifyDays != 7 || rv.Sample != 3 || rv.Batch != 5 {
+		t.Errorf("review 기본값: %+v", rv)
+	}
+	c, err = Load(write(t, "register_judge: {command: [x], timeout: 5s, candidates: 2, instruction: 지시}\nreview: {notify_command: [n, a], notify_min: 1, notify_days: 2, sample: 4, batch: 6}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.RegisterJudge.Timeout != 5*time.Second || c.RegisterJudge.Candidates != 2 || c.RegisterJudge.Instruction != "지시" ||
+		!reflect.DeepEqual(c.Review.NotifyCommand, []string{"n", "a"}) || c.Review.Batch != 6 || c.Review.Sample != 4 {
+		t.Errorf("설정값: %+v %+v", c.RegisterJudge, c.Review)
+	}
+}
+
+// 예시 설정의 등록 판정 지시문은 코드의 기본 지시문과 같은 글이다.
+func TestExampleRegisterJudgeInstructionIsDefault(t *testing.T) {
+	b, err := os.ReadFile("../../config.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(write(t, string(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimRight(c.RegisterJudge.Instruction, "\n") != DefaultRegisterJudgeInstruction || c.Review.NotifyMin != 5 {
+		t.Error("예시의 register_judge.instruction 이 기본 지시문과 다름")
+	}
+}
+
 func TestInvalid(t *testing.T) {
 	for name, body := range map[string]string{
 		"phrases 정규식":     "actions:\n  a.b: {phrases: ['(']}",
@@ -144,6 +181,8 @@ func TestInvalid(t *testing.T) {
 		"pick 명령 없음":      "judge: {pick: {mode: record, instruction: i}}",
 		"pick timeout 음수": "judge: {pick: {timeout: -1s}}",
 		"pick max 음수":     "judge: {pick: {max: -1}}",
+		"등록 판정 시간 음수":     "register_judge: {timeout: -1s}",
+		"검토 batch 음수":     "review: {batch: -1}",
 	} {
 		if _, err := Load(write(t, body)); err == nil {
 			t.Errorf("%s: 오류여야 함", name)

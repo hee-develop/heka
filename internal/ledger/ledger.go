@@ -84,29 +84,50 @@ type Picked struct {
 	Error  bool   `json:"error,omitempty"`
 }
 
+// Verdict 는 등록 판정이 후보 하나에 낸 답이다. Verdict 는 separate|merge|conflict|unjudged 이고,
+// unjudged 는 답을 얻지 못했거나 쓸 수 없어 검토 목록으로 넘겼다는 뜻이다.
+type Verdict struct {
+	ID      string `json:"id"`
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// RegisterJudged 는 등록 판정(heka judge-add) 한 번의 기록이다. 새 항목 id 는 줄의 Injected 에 있다.
+// MS 는 판정 명령을 부른 시간(밀리초), Error 는 시간 초과를 포함해 답을 얻지 못했다는 뜻,
+// Timeout 은 그중 시간 안에 끝나지 않았다는 뜻이다.
+type RegisterJudged struct {
+	Verdicts []Verdict `json:"verdicts"`
+	MS       int64     `json:"ms"`
+	Error    bool      `json:"error,omitempty"`
+	Timeout  bool      `json:"timeout,omitempty"`
+}
+
 // Row 는 원장 한 줄이다.
 type Row struct {
-	TS         string     `json:"ts"`
-	Session    string     `json:"session"`
-	Agent      string     `json:"agent,omitempty"` // 서브에이전트 안의 호출이면 agent_id
-	Event      string     `json:"event"`
-	Moment     string     `json:"moment"`
-	ToolMade   bool       `json:"tool_made,omitempty"` // 도구가 만든 프롬프트라 건너뜀
-	Actions    []string   `json:"actions"`             // 도구 호출을 해석한 동작 이름
-	Injected   []Injected `json:"injected"`
-	Dropped    []Dropped  `json:"dropped"`
-	Asked      []string   `json:"asked"`       // 프롬프트가 시킨 동작
-	Refused    []string   `json:"refused"`     // 프롬프트가 하지 말라고 한 동작
-	GrantsUsed []string   `json:"grants_used"` // 확인 없이 진행하게 한 허용(동작)
-	Confirm    []string   `json:"confirm"`     // 확인을 요구한 항목 id
-	DurationMS int64      `json:"duration_ms"`
-	Tokens     int        `json:"tokens,omitempty"` // 넣은 글의 토큰 어림
-	Reason     string     `json:"reason,omitempty"` // retire 의 사유
-	Prompt     string     `json:"prompt,omitempty"`
-	Checks     []Checked  `json:"checks,omitempty"` // 결과물 검사 결과
-	Judges     []Judged   `json:"judges,omitempty"` // 판정 명령을 부른 기록
-	Shadow     bool       `json:"shadow,omitempty"` // 그림자 방식으로 돈 줄(아무것도 내보내지 않았다)
-	Pick       *Pick      `json:"pick,omitempty"`   // 모델이 목록에서 후보를 고른 기록
+	TS         string          `json:"ts"`
+	Session    string          `json:"session"`
+	Agent      string          `json:"agent,omitempty"` // 서브에이전트 안의 호출이면 agent_id
+	Event      string          `json:"event"`
+	Moment     string          `json:"moment"`
+	ToolMade   bool            `json:"tool_made,omitempty"` // 도구가 만든 프롬프트라 건너뜀
+	Actions    []string        `json:"actions"`             // 도구 호출을 해석한 동작 이름
+	Injected   []Injected      `json:"injected"`
+	Dropped    []Dropped       `json:"dropped"`
+	Asked      []string        `json:"asked"`       // 프롬프트가 시킨 동작
+	Refused    []string        `json:"refused"`     // 프롬프트가 하지 말라고 한 동작
+	GrantsUsed []string        `json:"grants_used"` // 확인 없이 진행하게 한 허용(동작)
+	Confirm    []string        `json:"confirm"`     // 확인을 요구한 항목 id
+	DurationMS int64           `json:"duration_ms"`
+	Tokens     int             `json:"tokens,omitempty"` // 넣은 글의 토큰 어림
+	Reason     string          `json:"reason,omitempty"` // retire 의 사유
+	Prompt     string          `json:"prompt,omitempty"`
+	Checks     []Checked       `json:"checks,omitempty"`         // 결과물 검사 결과
+	Judges     []Judged        `json:"judges,omitempty"`         // 판정 명령을 부른 기록
+	Shadow     bool            `json:"shadow,omitempty"`         // 그림자 방식으로 돈 줄(아무것도 내보내지 않았다)
+	Pick       *Pick           `json:"pick,omitempty"`           // 모델이 목록에서 후보를 고른 기록
+	RegJudge   *RegisterJudged `json:"register_judge,omitempty"` // 등록 판정(register_judge 줄)의 기록
+	Entry      string          `json:"entry,omitempty"`          // review 줄의 검토 항목 id
+	Count      int             `json:"count,omitempty"`          // review_notify 줄의 검토 대기 건수
 }
 
 // IsHook 은 훅 이벤트(항목을 실제로 넣거나 뺀 판단)의 줄인가. find·add·flag·retire 등의 줄은 아니다.

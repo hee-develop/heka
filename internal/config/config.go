@@ -82,6 +82,43 @@ func (j Judge) PickRecording() bool {
 	return j.Pick.Mode == "record" && len(j.PickCommand()) > 0
 }
 
+// RegisterJudge 는 등록 뒤의 중복·모순 판정 명령의 설정이다. Command 가 비어 있으면 판정 명령이 없는 것이다.
+// Instruction 이 비면 DefaultRegisterJudgeInstruction 을 쓴다.
+type RegisterJudge struct {
+	Command     []string      `yaml:"command"`
+	Timeout     time.Duration `yaml:"timeout"`
+	Candidates  int           `yaml:"candidates"`
+	Instruction string        `yaml:"instruction"`
+}
+
+// Review 는 검토 목록과 알림의 설정이다. NotifyCommand 는 알림 글을 마지막 인자로 덧붙여 부르는 명령이다.
+type Review struct {
+	NotifyCommand []string `yaml:"notify_command"`
+	NotifyMin     int      `yaml:"notify_min"`
+	NotifyDays    int      `yaml:"notify_days"`
+	Sample        int      `yaml:"sample"`
+	Batch         int      `yaml:"batch"`
+}
+
+// DefaultRegisterJudgeInstruction 은 register_judge.instruction 이 비었을 때 쓰는 지시문이다.
+// 측정 도구가 같은 글로 재므로 바꾸면 config.example.yaml 의 글도 함께 바꾼다.
+const DefaultRegisterJudgeInstruction = `너는 개인 지식 저장소의 중복·모순 판정기다. 방금 등록된 [새 항목] 하나와, 주제어나 낱말이 겹쳐 후보가 된 기존 항목들([후보 1], [후보 2] …)이 주어진다. 후보는 주제어 하나(프로젝트 이름 같은 것)가 같다는 이유만으로 잡힌 것이 많아서 대부분 새 항목과 다른 내용이다. 각 항목은 AI 에이전트에게 주입되는 지식이며, 주입문(text)이 실제로 주입되는 글이고 본문(body)은 배경이다.
+
+후보마다 아래 셋 중 하나로 판정한다.
+
+- separate: 다루는 대상이나 지시가 다르다. 같은 프로젝트·같은 주제에 속해도 서로 다른 사실·결정·규칙이면 separate 다. 한쪽을 읽어도 다른 쪽이 알려 주는 것을 알 수 없으면 separate 다.
+- merge: 같은 사실·결정·규칙을 말하거나, 한쪽이 다른 쪽을 품거나, 새 항목이 기존 항목의 같은 규칙을 보강·갱신한 것이다. 둘이 함께 있으면 같은 내용이 두 번 주입되거나 낡은 판이 함께 주입된다.
+- conflict: 같은 상황에 대해 서로 반대로 지시하거나 양립할 수 없는 사실을 말한다. 둘이 함께 주입되면 에이전트가 어느 쪽을 따를지 모른다. 새 항목이 기존 결정을 뒤집은 경우도 여기에 든다.
+
+판단 기준:
+- 주제어나 프로젝트가 같다는 것만으로는 merge 가 아니다. 주입문이 같은 행동이나 같은 사실을 가리키는지를 본다.
+- 확신이 없으면 separate 를 고른다. separate 는 아무것도 바꾸지 않고, 일부는 사람이 나중에 표본으로 본다.
+- merge 일 때는 두 항목을 하나로 합친 초안을 쓴다. text 는 한두 문장이고 이것만 읽어도 행동할 수 있어야 한다. 두 항목의 지시를 하나도 빠뜨리지 않는다. body 는 두 본문의 배경과 예시를 잃지 않게 합친다. about 은 두 주제어를 합치고 겹친 것을 뺀다.
+
+출력은 JSON 하나만 쓴다. 다른 글, 코드 울타리(` + "`" + `` + "`" + `` + "`" + `)는 쓰지 않는다. 후보마다 한 건씩, 주어진 순서대로 쓴다.
+{"verdicts":[{"id":"후보 id","verdict":"separate|merge|conflict","reason":"한 문장 이유","merged":{"text":"합친 주입문","body":"합친 본문","about":["주제어"]}}]}
+merged 는 verdict 가 merge 일 때만 쓴다.`
+
 // Config 는 읽어 둔 설정이다. 빈 값이 유효한 설정이다.
 type Config struct {
 	Scopes         map[string]item.List `yaml:"scopes"`
@@ -91,6 +128,8 @@ type Config struct {
 	NegationWindow int                  `yaml:"negation_window"`
 	Budgets        map[string]int       `yaml:"budgets"`
 	Judge          Judge                `yaml:"judge"`
+	RegisterJudge  RegisterJudge        `yaml:"register_judge"`
+	Review         Review               `yaml:"review"`
 	ToolActions    map[string][]string  `yaml:"tool_actions"`
 	Locations      []Location           `yaml:"locations"`
 	ClaudeCode     ClaudeCode           `yaml:"claude_code"`
@@ -207,6 +246,14 @@ func (c *Config) validate() error {
 			return fmt.Errorf("judge.pick.mode 가 record 이면 judge.pick.command 또는 judge.command 가 있어야 함")
 		}
 	}
+	rj := &c.RegisterJudge
+	if rj.Timeout < 0 || rj.Candidates < 0 {
+		return fmt.Errorf("register_judge.timeout, register_judge.candidates 는 0 이상이어야 함")
+	}
+	rv := &c.Review
+	if rv.NotifyMin < 0 || rv.NotifyDays < 0 || rv.Sample < 0 || rv.Batch < 0 {
+		return fmt.Errorf("review.notify_min, review.notify_days, review.sample, review.batch 는 0 이상이어야 함")
+	}
 	for k, v := range c.Budgets {
 		if _, ok := DefaultBudgets[k]; !ok || v < 0 {
 			return fmt.Errorf("budgets.%s: 순간 이름(session_start|prompt|tool|subagent_start|find)과 0 이상의 값이어야 함", k)
@@ -226,6 +273,27 @@ func (c *Config) validate() error {
 	}
 	if j.Pick.Max == 0 {
 		j.Pick.Max = PickDefaultMax
+	}
+	if rj.Timeout == 0 {
+		rj.Timeout = 120 * time.Second
+	}
+	if rj.Candidates == 0 {
+		rj.Candidates = 5
+	}
+	if strings.TrimSpace(rj.Instruction) == "" {
+		rj.Instruction = DefaultRegisterJudgeInstruction
+	}
+	if rv.NotifyMin == 0 {
+		rv.NotifyMin = 5
+	}
+	if rv.NotifyDays == 0 {
+		rv.NotifyDays = 7
+	}
+	if rv.Sample == 0 {
+		rv.Sample = 3
+	}
+	if rv.Batch == 0 {
+		rv.Batch = 5
 	}
 	b := maps.Clone(DefaultBudgets)
 	maps.Copy(b, c.Budgets)
