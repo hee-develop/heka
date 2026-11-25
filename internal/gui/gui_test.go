@@ -42,7 +42,9 @@ func fixture(t *testing.T) string {
 	write("items/alpha-rule.md", item("alpha-rule", "알파 규칙을 지킨다.", "must: true\nwhen: {moment: [prompt]}\ncheck: {target: command, pattern: foo, mode: log}\n"))
 	write("items/beta-note.md", item("beta-note", "베타 참고.", "push: false\n"))
 	write("items/broken.md", "머리말 없음\n")
-	write("items/_pending/gamma.md", item("gamma", "대기 중.", ""))
+	write("review/alpha-rule--beta-note.json", `{"id":"alpha-rule--beta-note","kind":"merge","new_id":"alpha-rule","target_id":"beta-note","created":"2026-11-01T00:00:00Z"}`)
+	write("review/alpha-rule--gone.json", `{"id":"alpha-rule--gone","kind":"conflict","new_id":"alpha-rule","target_id":"gone","created":"2026-11-01T00:00:00Z"}`) // 대상이 없어 세지 않는다
+	write("review/.sample-state.json", `{"last":"2026-11-01T00:00:00Z"}`)
 	write("ledger/errors.log", "t\tPreToolUse\t오류1\nt\tStop\t오류2\n")
 	write("config.yaml", "claude_code:\n  shadow: true\n")
 
@@ -99,13 +101,17 @@ func getJSON(t *testing.T, h http.Handler, target string, v any) int {
 }
 
 func TestMeta(t *testing.T) {
-	h := NewHandler(fixture(t), "v-test")
+	home := fixture(t)
+	h := NewHandler(home, "v-test")
 	var m meta
 	if code := getJSON(t, h, "/api/meta", &m); code != 200 {
 		t.Fatalf("code = %d", code)
 	}
-	if m.Version != "v-test" || m.Items != (metaItems{Total: 2, Push: 1, FindOnly: 1, Must: 1, Pending: 1}) {
+	if m.Version != "v-test" || m.Items != (metaItems{Total: 2, Push: 1, FindOnly: 1, Must: 1, Review: 1}) {
 		t.Errorf("meta = %+v", m)
+	}
+	if _, err := os.Stat(filepath.Join(home, "review", "alpha-rule--gone.json")); err != nil {
+		t.Error("화면은 읽기 전용이라 검토 항목을 지우면 안 됨")
 	}
 	if m.Ledger.Rows != 7 || m.Ledger.FirstTS != "2026-11-01T01:00:00.000Z" || m.Ledger.LastTS != "2026-11-03T02:00:00.000Z" {
 		t.Errorf("ledger = %+v", m.Ledger)

@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/hee-develop/heka/internal/config"
@@ -83,60 +82,5 @@ func runAdd(args []string, stdout, stderr io.Writer) int {
 	if res.Status == "invalid" {
 		return 1
 	}
-	return 0
-}
-
-// runPending 은 `heka pending [fix|replace|keep|drop ...]` 를 실행한다.
-func runPending(args []string, stdout, stderr io.Writer) int {
-	var reason string
-	fs := flag.NewFlagSet("pending", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.StringVar(&reason, "reason", "", "keep: 다른 항목이라는 이유")
-	pos, err := parseMixed(fs, args)
-	if err != nil {
-		return 2
-	}
-	e, err := registerEnv()
-	if err != nil {
-		fmt.Fprintln(stderr, "heka pending:", err)
-		return 1
-	}
-	if len(pos) == 0 {
-		list, err := register.Pending(e)
-		if err != nil {
-			fmt.Fprintln(stderr, "heka pending:", err)
-			return 1
-		}
-		if len(list) == 0 {
-			fmt.Fprintln(stdout, "대기함이 비어 있습니다.")
-		}
-		for _, p := range list {
-			fmt.Fprintf(stdout, "[%s] %s\n", p.ID, p.Text)
-			for _, c := range p.Candidates {
-				fmt.Fprintf(stdout, "  - %s: %s (%s)\n", c.ID, c.Text, c.Reason)
-			}
-		}
-		return 0
-	}
-	need := map[string]int{"fix": 2, "replace": 2, "keep": 1, "drop": 1}[pos[0]]
-	if need == 0 || len(pos)-1 != need {
-		fmt.Fprintln(stderr, strings.TrimSpace(`
-사용법: heka pending                                  대기함 목록
-        heka pending fix <대기 id> <기존 id>          기존 항목의 내용을 새 내용으로 고침
-        heka pending replace <대기 id> <기존 id>      기존 항목을 지우고 새 항목을 등록
-        heka pending keep <대기 id> --reason <글>     다른 항목이라는 이유를 적고 등록
-        heka pending drop <대기 id>                   대기함에서 지움`))
-		return 2
-	}
-	target := ""
-	if need == 2 {
-		target = pos[2]
-	}
-	msg, err := register.Decide(e, pos[0], pos[1], target, reason)
-	if err != nil {
-		fmt.Fprintln(stderr, "heka pending:", err)
-		return 1
-	}
-	fmt.Fprintln(stdout, msg)
 	return 0
 }

@@ -224,3 +224,12 @@ func parsePick(s string, known map[string]bool) PickOutcome {
 	}
 	return PickOutcome{Err: errors.New("판정 명령의 답에서 inject 키가 배열인 JSON 객체를 찾지 못함")}
 }
+
+// RunCommand 는 명령에 in 을 표준 입력으로 넘기고 표준 출력을 돌려준다. 등록 판정처럼 다른 판정 명령 호출이 같은 방식으로 쓴다.
+// timeout 이 0 보다 크면 그 안에 끝나야 하고, 아니면 IsTimeout 이 참인 오류다.
+func RunCommand(ctx context.Context, command []string, timeout time.Duration, in string) (string, error) {
+	return runCommand(ctx, command, timeout, in)
+}
+
+// IsTimeout 은 오류가 판정 명령이 시간 안에 끝나지 않아서 난 것인가.
+func IsTimeout(err error) bool { return errors.Is(err, errTimeout) }

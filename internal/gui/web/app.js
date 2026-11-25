@@ -107,8 +107,8 @@ const LANE_BY = Object.fromEntries(LANES.map(l => [l.id, l]));
 // 카드의 작은 띠에 쓰는 단계(순서도의 처리·판단 노드). chip:false 는 뺀다.
 const flowNodes = lane => lane.nodes.filter(n => (n.kind === 'P' || n.kind === 'D') && n.chip !== false && n.t);
 // 훅이 아닌 사건(모델·사람이 부르는 것)
-const EVENTS = [['find', '조회', 'heka find'], ['add', '등록', 'heka add'], ['pending', '대기함 결정', 'pending'],
-  ['flag', '표시', 'flag'], ['retire', '은퇴', 'retire']];
+const EVENTS = [['find', '조회', 'heka find'], ['add', '등록', 'heka add'], ['register_judge', '등록 판정', 'heka judge-add'],
+  ['flag', '표시', 'flag'], ['retire', '은퇴', 'retire'], ['review', '검토 결정', 'heka review apply'], ['review_notify', '검토 알림', 'heka review --notify']];
 const STAGES_ORDER = ['범위', '자격', '일치', '중복', '예산', '판정'];
 
 // ---------- 작은 도구 ----------
@@ -179,7 +179,7 @@ async function renderHead() {
     const box = document.getElementById('h-stats');
     box.replaceChildren(...[
       el('span', { class: 'st' }, '항목 ', el('b', { text: n0(m.items.total) }),
-        el('span', { class: 'muted', text: `건 (넣는 것 ${n0(m.items.push)} · 조회 전용 ${n0(m.items.find_only)} · 필수 ${n0(m.items.must)} · 대기함 ${n0(m.items.pending)})` })),
+        el('span', { class: 'muted', text: `건 (넣는 것 ${n0(m.items.push)} · 조회 전용 ${n0(m.items.find_only)} · 필수 ${n0(m.items.must)} · 검토 대기 ${n0(m.items.review)})` })),
       el('span', { class: 'st' }, '원장 ', el('b', { text: n0(m.ledger.rows) }), '줄',
         m.ledger.first_ts ? el('span', { class: 'muted', text: ` (${fmtTime(m.ledger.first_ts)} ~ ${fmtTime(m.ledger.last_ts)})` }) : ''),
       m.errors > 0 ? el('span', { class: 'badge-warn', text: `훅 오류 ${n0(m.errors)}건` }) : el('span', { class: 'st muted', text: '훅 오류 0건' }),
@@ -435,7 +435,7 @@ async function viewOverview(root, token) {
       const v = ov.events[k] || 0;
       return el('span', { class: 'chip' + (v ? '' : ' zero') }, label, ' ', el('b', { text: n0(v) + '번' }), ' ', el('small', { text: cmd }));
     })),
-    el('p', { class: 'muted', text: '조회는 조회 전용 항목까지 찾고, 등록·표시·은퇴·대기함 결정은 항목 파일을 바꿉니다.' })));
+    el('p', { class: 'muted', text: '조회는 조회 전용 항목까지 찾고, 등록·표시·은퇴·검토 결정은 항목 파일을 바꿉니다.' })));
   view.append(el('div', { class: 'band' }, el('h3', { text: '구조: 항목이 어디에서 읽히고 판단이 어디에 남는가' }),
     el('div', { class: 'struct' }, el('span', { class: 'box', text: '항목 파일 (items/*.md)' }), el('span', { class: 'muted', text: '→' }),
       el('span', { class: 'box', text: '색인' }), el('span', { class: 'muted', text: '→ 위의 모든 판단이 읽음 →' }),

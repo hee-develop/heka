@@ -12,6 +12,7 @@ import (
 	"github.com/hee-develop/heka/internal/config"
 	"github.com/hee-develop/heka/internal/item"
 	"github.com/hee-develop/heka/internal/ledger"
+	"github.com/hee-develop/heka/internal/review"
 )
 
 const (
@@ -64,7 +65,7 @@ type metaItems struct {
 	Push     int `json:"push"`
 	FindOnly int `json:"find_only"`
 	Must     int `json:"must"`
-	Pending  int `json:"pending"`
+	Review   int `json:"review"` // 검토 대기 건수(review/*.json, 지워진 항목을 가리키는 것은 뺌)
 }
 
 type metaLedger struct {
@@ -95,8 +96,8 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request) {
 			m.Items.Must++
 		}
 	}
-	pend, _ := filepath.Glob(filepath.Join(s.home, "items", "_pending", "*.md"))
-	m.Items.Pending = len(pend)
+	live, _ := review.Live(s.home) // 읽기만 한다. 목록 정리(지우기)는 하지 않는다
+	m.Items.Review = len(live)
 	rows := ledger.ReadAll(s.home)
 	m.Ledger.Rows = len(rows)
 	for _, row := range rows {

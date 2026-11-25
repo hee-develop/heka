@@ -1,5 +1,5 @@
 // Package mcpserver 는 표준 입출력으로 JSON-RPC 2.0 메시지를 한 줄에 하나씩 주고받는 MCP 서버다.
-// 도구는 heka_find, heka_add, heka_pending, heka_flag 넷이다. 도구 호출이 어떻게 실패해도 서버는 죽지 않는다.
+// 도구는 heka_find, heka_add, heka_flag 셋이다. 검토는 사람이 시작하므로 MCP 에 두지 않는다. 도구 호출이 어떻게 실패해도 서버는 죽지 않는다.
 package mcpserver
 
 import (
@@ -16,7 +16,6 @@ import (
 
 	"github.com/hee-develop/heka/internal/config"
 	"github.com/hee-develop/heka/internal/index"
-	"github.com/hee-develop/heka/internal/ledger"
 	"github.com/hee-develop/heka/internal/lookup"
 	"github.com/hee-develop/heka/internal/register"
 )
@@ -224,30 +223,6 @@ func (s *Server) run(name string, args json.RawMessage) (msg string, isErr bool,
 			return "", false, err
 		}
 		return r.Text(), r.Status == "invalid", nil
-	case "heka_pending":
-		var a struct{ Action, ID, Target, Reason string }
-		if err := strict(&a); err != nil {
-			return "", false, err
-		}
-		if a.Action == "" || a.Action == "list" {
-			list, err := register.Pending(env)
-			if err != nil {
-				return "", false, err
-			}
-			if len(list) == 0 {
-				return "대기함이 비어 있습니다.", false, nil
-			}
-			var b strings.Builder
-			for _, p := range list {
-				fmt.Fprintf(&b, "[%s] %s\n", p.ID, p.Text)
-				for _, c := range p.Candidates {
-					fmt.Fprintf(&b, "  - %s: %s (%s)\n", c.ID, c.Text, c.Reason)
-				}
-			}
-			return b.String(), false, nil
-		}
-		msg, err := register.Decide(env, a.Action, a.ID, a.Target, a.Reason)
-		return msg, false, err
 	case "heka_flag":
 		var a struct{ ID, Reason string }
 		if err := strict(&a); err != nil {
@@ -256,18 +231,8 @@ func (s *Server) run(name string, args json.RawMessage) (msg string, isErr bool,
 		if a.ID == "" || strings.TrimSpace(a.Reason) == "" {
 			return "", false, errors.New("id 와 reason 이 필요함")
 		}
-		ix, err := s.open(cfg)
-		if err != nil {
+		if err := register.Flag(env, a.ID, a.Reason); err != nil {
 			return "", false, err
-		}
-		defer ix.Close()
-		rec, err := ix.Item(a.ID)
-		if err != nil {
-			return "", false, fmt.Errorf("항목 %q 를 찾지 못함: %w", a.ID, err)
-		}
-		row := ledger.Row{Event: "flag", Moment: "flag", Injected: []ledger.Injected{{ID: a.ID, Hash: rec.Hash, Why: a.Reason}}}
-		if err := ledger.Append(s.Home, row, now); err != nil {
-			return "", false, fmt.Errorf("원장에 쓰지 못함: %w", err)
 		}
 		return fmt.Sprintf("%s 에 표시를 남겼습니다. 항목 파일은 고치지 않았습니다. 사람이 점검 때 봅니다.", a.ID), false, nil
 	}
