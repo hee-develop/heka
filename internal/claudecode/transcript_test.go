@@ -96,7 +96,7 @@ func question(q string, multi bool, labels ...string) map[string]any {
 	return map[string]any{"question": q, "header": "머리", "multiSelect": multi, "options": opts}
 }
 
-func queued(kind, prompt string, extra map[string]any) map[string]any {
+func queued(kind string, prompt any, extra map[string]any) map[string]any {
 	m := map[string]any{"type": "attachment", "attachment": map[string]any{
 		"type": "queued_command", "prompt": prompt, "commandMode": "prompt", "origin": map[string]any{"kind": kind}}}
 	for k, v := range extra {
@@ -106,6 +106,7 @@ func queued(kind, prompt string, extra map[string]any) map[string]any {
 }
 
 // 사용자의 말이 일반 메시지 말고 질문 도구의 답과 작업 중 메시지로 남는 경우다.
+// 여러 개를 고른 답은 Claude Code 가 남기는 모양을 따랐다. 고른 라벨 뒤에 직접 친 글이 오고, ", " 가 든 칸은 큰따옴표로 감싼다.
 func TestUserTextsAskAndQueued(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "s.jsonl")
 	writeJSONL(t, p,
@@ -114,18 +115,28 @@ func TestUserTextsAskAndQueued(t *testing.T) {
 			[]any{
 				question("방향?", false, "가안 (추천)", "나안"),
 				question("고른 라벨만?", false, "가안 (추천)", "나안"),
+				question("라벨로 시작?", false, "예", "아니오"),
 				question("여럿?", true, "하나, 둘", "셋", "넷"),
+				question("라벨 든 직접 글?", true, "가", "나"),
 				question("배열?", true, "셋", "넷"),
 				question("안 답함?", false, "셋"),
 			},
 			map[string]any{
-				"방향?":     "직접 친 답, 쉼표 포함",
-				"고른 라벨만?": "가안 (추천)",
-				"여럿?":     "하나, 둘, 직접 친 덧붙임, 셋",
-				"배열?":     []any{"넷", "배열 속 직접 친 글"},
+				"방향?":        "직접 친 답, 쉼표 포함",
+				"고른 라벨만?":    "가안 (추천)",
+				"라벨로 시작?":    "예, 그렇게 하되 테스트도",
+				"여럿?":        `"하나, 둘", 셋, 직접 친 덧붙임`,
+				"라벨 든 직접 글?": `나, "직접 글, 가, 그 뒤"`,
+				"배열?":        []any{"넷", "배열 속 직접 친 글"},
 			},
 			map[string]any{"고른 라벨만?": map[string]any{"notes": "메모 글", "preview": "AI 미리보기"}, "여럿?": "모양이 다른 메모"},
 		),
+		// 같은 줄에서 질문 도구 결과 앞에 놓인 글도 읽는다.
+		askUse("ask2"),
+		msg("user", []any{
+			map[string]any{"type": "text", "text": "결과 앞의 글"},
+			map[string]any{"type": "tool_result", "tool_use_id": "ask2", "content": "The user answered: ..."},
+		}, map[string]any{"toolUseResult": map[string]any{"questions": []any{question("둘째?", false, "셋")}, "answers": map[string]any{"둘째?": "둘째 답"}}}),
 		// 질문 도구가 아닌 도구의 결과는 같은 모양이어도 읽지 않는다.
 		msg("assistant", []any{map[string]any{"type": "tool_use", "id": "bash1", "name": "Bash", "input": map[string]any{}}}, nil),
 		askResultLine("bash1", []any{question("가짜?", false, "셋")}, map[string]any{"가짜?": "AI 가 만든 출력"}, nil),
@@ -135,6 +146,7 @@ func TestUserTextsAskAndQueued(t *testing.T) {
 		msg("assistant", []any{map[string]any{"type": "tool_use", "id": "side1", "name": "AskUserQuestion"}}, map[string]any{"isSidechain": true}),
 		askResultLine("side1", []any{question("곁?", false, "셋")}, map[string]any{"곁?": "곁가지 답"}, nil),
 		queued("human", "작업 중 보낸 말", nil),
+		queued("human", []any{map[string]any{"type": "text", "text": "이미지와 보낸 말"}, map[string]any{"type": "image", "source": map[string]any{}}}, nil),
 		queued("human", "<system-reminder>안내</system-reminder>", nil),
 		queued("peer", "다른 세션의 말", nil),
 		queued("coordinator", "조정자의 말", nil),
@@ -146,7 +158,11 @@ func TestUserTextsAskAndQueued(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"직접 친 답, 쉼표 포함", "메모 글", "직접 친 덧붙임", "배열 속 직접 친 글", "작업 중 보낸 말"}
+	want := []string{
+		"직접 친 답, 쉼표 포함", "메모 글", "예, 그렇게 하되 테스트도", "직접 친 덧붙임", `"직접 글, 가, 그 뒤"`, "배열 속 직접 친 글",
+		"결과 앞의 글", "둘째 답",
+		"작업 중 보낸 말", "이미지와 보낸 말",
+	}
 	if !slices.Equal(got, want) {
 		t.Errorf("사용자 글 = %q\n기대 %q", got, want)
 	}
@@ -154,19 +170,26 @@ func TestUserTextsAskAndQueued(t *testing.T) {
 
 func TestTypedAnswer(t *testing.T) {
 	labels := []string{"가", "가, 나", "다 (추천)"}
-	for ans, want := range map[string]string{
-		"가":             "",
-		"가, 나":          "",
-		"가, 나, 다 (추천)":  "",
-		"다 (추천), 직접":    "직접",
-		"직접, 가":         "직접",
-		"직접 글, 그 뒤":     "직접 글, 그 뒤",
-		"가나":            "가나",
-		"":              "",
-		"다 (추천), 가, 끝말": "끝말",
+	for _, c := range []struct {
+		ans   string
+		multi bool
+		want  string
+	}{
+		{"가", false, ""},
+		{"가, 나", false, ""},
+		{"가, 직접", false, "가, 직접"},
+		{"직접", false, "직접"},
+		{"가", true, ""},
+		{"가, 다 (추천)", true, ""},
+		{`"가, 나", 다 (추천)`, true, ""},
+		{"다 (추천), 직접", true, "직접"},
+		{`다 (추천), "직접, 가, 그 뒤"`, true, `"직접, 가, 그 뒤"`},
+		{"직접, 가", true, "직접, 가"},
+		{"가나", true, "가나"},
+		{"", true, ""},
 	} {
-		if got := typedAnswer(ans, labels); got != want {
-			t.Errorf("typedAnswer(%q) = %q, 기대 %q", ans, got, want)
+		if got := typedAnswer(c.ans, labels, c.multi); got != c.want {
+			t.Errorf("typedAnswer(%q, multi=%v) = %q, 기대 %q", c.ans, c.multi, got, c.want)
 		}
 	}
 }

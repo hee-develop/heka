@@ -31,8 +31,8 @@ type transcriptLine struct {
 	} `json:"message"`
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
 	Attachment    *struct {
-		Type   string `json:"type"`
-		Prompt string `json:"prompt"`
+		Type   string          `json:"type"`
+		Prompt json.RawMessage `json:"prompt"` // 문자열이거나, 이미지를 붙였으면 content 칸의 배열이다
 		Origin struct {
 			Kind string `json:"kind"`
 		} `json:"origin"`
@@ -51,8 +51,9 @@ type contentPart struct {
 // askResult 는 askTool 결과의 toolUseResult 다. answers 값은 문자열이거나 문자열 배열이다.
 type askResult struct {
 	Questions []struct {
-		Question string `json:"question"`
-		Options  []struct {
+		Question    string `json:"question"`
+		MultiSelect bool   `json:"multiSelect"`
+		Options     []struct {
 			Label string `json:"label"`
 		} `json:"options"`
 	} `json:"questions"`
@@ -64,6 +65,7 @@ type askResult struct {
 // 읽는 곳은 세 군데다.
 //   - "type":"user" 줄의 message.content 에 든 글.
 //   - askTool 결과의 답과 메모. 사용자가 고른 선택지 라벨은 AI 가 쓴 글이라 빼고, 직접 친 글만 읽는다.
+//     답을 사람이 아닌 쪽(훅이나 SDK 의 권한 콜백)이 채웠는지는 기록으로 가릴 수 없다. 그런 설정은 사용자가 직접 둔 것이라 받아들인다.
 //   - 작업 중에 보낸 메시지("type":"attachment", attachment.type queued_command). origin.kind 가 human 인 것만 읽는다.
 //     peer·coordinator 는 다른 세션이나 에이전트가 보낸 글이다.
 //
@@ -125,20 +127,16 @@ func lineTexts(line []byte, asks map[string]bool) []string {
 		return nil
 	case "attachment":
 		if a := tl.Attachment; a != nil && a.Type == "queued_command" && a.Origin.Kind == "human" {
-			return []string{a.Prompt}
+			return contentTexts(a.Prompt)
 		}
 		return nil
 	case "user":
 	default:
 		return nil
 	}
-	var s string
-	if json.Unmarshal(tl.Message.Content, &s) == nil {
-		return []string{s}
-	}
 	var parts []contentPart
 	if json.Unmarshal(tl.Message.Content, &parts) != nil {
-		return nil
+		return contentTexts(tl.Message.Content)
 	}
 	var texts []string
 	for _, p := range parts {
@@ -147,8 +145,27 @@ func lineTexts(line []byte, asks map[string]bool) []string {
 			if !asks[p.ToolUseID] {
 				return nil
 			}
-			return askAnswers(tl.ToolUseResult)
+			texts = append(texts, askAnswers(tl.ToolUseResult)...)
 		case "text":
+			texts = append(texts, p.Text)
+		}
+	}
+	return texts
+}
+
+// contentTexts 는 문자열이거나 content 칸의 배열인 값에서 글을 꺼낸다. 배열이면 text 칸만 본다.
+func contentTexts(raw json.RawMessage) []string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return []string{s}
+	}
+	var parts []contentPart
+	if json.Unmarshal(raw, &parts) != nil {
+		return nil
+	}
+	var texts []string
+	for _, p := range parts {
+		if p.Type == "text" {
 			texts = append(texts, p.Text)
 		}
 	}
@@ -170,7 +187,7 @@ func askAnswers(raw json.RawMessage) []string {
 		var one string
 		var many []string
 		if a := res.Answers[q.Question]; json.Unmarshal(a, &one) == nil {
-			if t := typedAnswer(one, labels); t != "" {
+			if t := typedAnswer(one, labels, q.MultiSelect); t != "" {
 				out = append(out, t)
 			}
 		} else if json.Unmarshal(a, &many) == nil {
@@ -190,38 +207,45 @@ func askAnswers(raw json.RawMessage) []string {
 	return out
 }
 
-// typedAnswer 는 답에서 고른 선택지 라벨을 빼고 남은 글을 돌려준다.
-// 여러 개를 고른 답은 고른 라벨과 직접 친 글을 ", " 로 이은 문자열이다. 그래서 ", " 로 나뉜 칸 단위로 라벨을 찾는다.
-// 라벨 자체에 ", " 가 들어 있을 수 있으므로 칸의 앞머리에서 가장 긴 라벨부터 맞춰 본다.
-func typedAnswer(ans string, labels []string) string {
-	const sep = ", "
-	byLen := slices.Clone(labels)
-	slices.SortFunc(byLen, func(a, b string) int { return len(b) - len(a) })
-	var kept []string
-	for rest := ans; rest != ""; {
-		if l, ok := labelAt(rest, byLen, sep); ok {
-			rest = strings.TrimPrefix(rest[len(l):], sep)
-			continue
+// typedAnswer 는 답에서 고른 선택지 라벨을 빼고 남은 글을 원문 그대로 돌려준다.
+// 하나를 고르는 질문의 답은 라벨 하나이거나 직접 친 글 하나라, 답 전체가 라벨과 같을 때만 뺀다.
+// 여러 개를 고르는 질문의 답은 고른 라벨들 뒤에 직접 친 글을 ", " 로 이은 문자열이고,
+// 칸 안에 ", " 가 있으면 그 칸을 큰따옴표로 감싼다. 그래서 앞에서부터 라벨 칸만 떼고 나머지는 자르지 않는다.
+// 남은 글이 큰따옴표로 감싸여 있어도 그대로 둔다. 인용 대조는 포함 여부로 보므로 안쪽 글이 그대로 맞는다.
+func typedAnswer(ans string, labels []string, multi bool) string {
+	if !multi {
+		if slices.Contains(labels, ans) {
+			return ""
 		}
-		i := strings.Index(rest, sep)
-		if i < 0 {
-			kept = append(kept, rest)
+		return ans
+	}
+	const sep = ", "
+	rest := ans
+	for rest != "" {
+		n := labelCell(rest, labels, sep)
+		if n == 0 {
 			break
 		}
-		kept = append(kept, rest[:i])
-		rest = rest[i+len(sep):]
+		rest = strings.TrimPrefix(rest[n:], sep)
 	}
-	return strings.Join(kept, sep)
+	return rest
 }
 
-// labelAt 은 rest 가 라벨 하나로 시작하고 그 뒤가 끝이거나 sep 인지 본다. labels 는 긴 것부터 놓여 있어야 한다.
-func labelAt(rest string, labels []string, sep string) (string, bool) {
+// labelCell 은 rest 가 라벨 하나(그대로거나 큰따옴표로 감싼 것)로 된 칸으로 시작하면 그 칸의 길이를, 아니면 0 을 돌려준다.
+// 칸은 rest 의 끝이나 sep 앞에서 끝나야 한다. 길이가 같은 라벨이 여럿 맞아도 길이만 쓰므로 상관없다.
+func labelCell(rest string, labels []string, sep string) int {
+	best := 0
 	for _, l := range labels {
-		if l != "" && strings.HasPrefix(rest, l) && (len(rest) == len(l) || strings.HasPrefix(rest[len(l):], sep)) {
-			return l, true
+		if l == "" {
+			continue
+		}
+		for _, cell := range []string{l, `"` + l + `"`} {
+			if len(cell) > best && strings.HasPrefix(rest, cell) && (len(rest) == len(cell) || strings.HasPrefix(rest[len(cell):], sep)) {
+				best = len(cell)
+			}
 		}
 	}
-	return "", false
+	return best
 }
 
 func hasAnyPrefix(s string, prefixes []string) bool {
