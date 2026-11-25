@@ -79,6 +79,47 @@ func TestUserTexts(t *testing.T) {
 	}
 }
 
+// 사람이 치지 않았는데 user 줄이나 사용자 메시지 안에 남는 글이다.
+func TestUserTextsExcludesGenerated(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.jsonl")
+	writeJSONL(t, p,
+		msg("user", "This session is being continued from a previous conversation. 요약 속 AI 문장", map[string]any{"isCompactSummary": true, "isVisibleInTranscriptOnly": true}),
+		msg("user", "<bash-input>cat 노트</bash-input>", nil),
+		msg("user", "<bash-stdout>AI 가 파일에 쓴 문장</bash-stdout><bash-stderr></bash-stderr>", nil),
+		msg("user", "<bash-stderr>오류</bash-stderr>", nil),
+		msg("user", "<command-message>스킬</command-message>\n<command-name>/스킬</command-name>", nil),
+		msg("user", "<artifact-content-authored-by-others>남이 쓴 글</artifact-content-authored-by-others>", nil),
+		msg("user", "에이전트 결과 본문", map[string]any{"origin": map[string]any{"kind": "task-notification"}}),
+		msg("user", "사람의 말", map[string]any{"origin": map[string]any{"kind": "human"}}),
+		msg("user", "이것 좀 봐줘\n\n<pasted_content id=\"ab12\">\n다른 AI 의 분석\n</pasted_content id=\"ab12\">\n그리고 뒤의 말", nil),
+		msg("user", "<pasted_content id=\"cd34\">\n붙여넣기만\n</pasted_content id=\"cd34\">", nil),
+		msg("user", "앞의 말 <pasted_content id=\"ef56\">닫히지 않은 붙여넣기", nil),
+		queued("human", "대기 말 <pasted_content id=\"gh78\">붙인 글</pasted_content id=\"gh78\">", nil),
+	)
+	got, err := UserTexts(p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"<bash-input>cat 노트</bash-input>", "사람의 말", "이것 좀 봐줘\n\n\n그리고 뒤의 말", "앞의 말 ", "대기 말 "}
+	if !slices.Equal(got, want) {
+		t.Errorf("사용자 글 = %q\n기대 %q", got, want)
+	}
+}
+
+func TestStripPasted(t *testing.T) {
+	for in, want := range map[string]string{
+		"글": "글",
+		`가<pasted_content id="1">x</pasted_content id="1">나<pasted_content id="2">y</pasted_content id="2">다`: "가나다",
+		`가<pasted_content id="1">x</pasted_content id="2">나`:                                                  "가",
+		`가<pasted_content id="1"`: "가",
+		`가<pasted_content id="1">안에 </pasted_content id="9"> 가짜 닫음</pasted_content id="1">끝`: "가끝",
+	} {
+		if got := stripPasted(in); got != want {
+			t.Errorf("stripPasted(%q) = %q, 기대 %q", in, got, want)
+		}
+	}
+}
+
 func askUse(id string) map[string]any {
 	return msg("assistant", []any{map[string]any{"type": "tool_use", "id": id, "name": "AskUserQuestion", "input": map[string]any{}}}, nil)
 }

@@ -16,17 +16,27 @@ import (
 )
 
 // 사용자가 친 글이 아닌 줄의 머리다. 도구가 만들어 사용자 글처럼 넣은 것들이다.
-var systemPrefixes = []string{"<local-command", "<command-name>", "<system-reminder>"}
+// <bash-stdout>·<bash-stderr> 는 ! 명령의 출력이고, <artifact-content-authored-by-others> 는 다른 사람이 쓴 글이다.
+// ! 로 친 명령 자체(<bash-input>)는 사용자가 친 글이라 넣지 않는다.
+var systemPrefixes = []string{"<local-command", "<command-name>", "<command-message>", "<system-reminder>",
+	"<bash-stdout", "<bash-stderr", "<artifact-content-authored-by-others"}
+
+// pastedOpen 은 사용자가 붙여넣은 글 블록의 머리다. 블록은 <pasted_content id="…"> 로 열고 </pasted_content id="…"> 로 닫는다.
+const pastedOpen = `<pasted_content id="`
 
 // askTool 은 사용자에게 선택지를 묻는 도구의 이름이다. 그 결과에는 사용자의 답이 들어 있다.
 const askTool = "AskUserQuestion"
 
 // transcriptLine 은 세션 기록 파일의 한 줄에서 쓰는 필드다.
 type transcriptLine struct {
-	Type        string `json:"type"`
-	IsMeta      bool   `json:"isMeta"`
-	IsSidechain bool   `json:"isSidechain"`
-	Message     struct {
+	Type             string `json:"type"`
+	IsMeta           bool   `json:"isMeta"`
+	IsSidechain      bool   `json:"isSidechain"`
+	IsCompactSummary bool   `json:"isCompactSummary"` // 대화를 압축하며 AI 가 쓴 요약이다
+	Origin           *struct {
+		Kind string `json:"kind"`
+	} `json:"origin"` // user 줄을 누가 넣었는지. 없거나 human 이면 사람이다
+	Message struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
@@ -78,7 +88,8 @@ type askResult struct {
 // 질문을 거절하며 친 글은 도구 결과의 본문에만 남아 읽지 않는다.
 //
 // 다음은 사용자가 친 글로 보지 않는다. askTool 이 아닌 도구의 tool_result 가 든 줄(AI 가 만든 출력이 들어갈 수 있다),
-// isMeta·isSidechain 이 참인 줄, toolPrefixes 나 systemPrefixes 로 시작하는 글.
+// isMeta·isSidechain·isCompactSummary 가 참인 줄, origin.kind 가 human 이 아닌 user 줄(에이전트 결과 알림 등),
+// toolPrefixes 나 systemPrefixes 로 시작하는 글, 붙여넣은 글 블록(사용자가 쓴 글이 아닐 수 있다).
 // AI 의 글("type":"assistant")은 askTool 호출의 id 를 기억하는 데만 쓴다. 깨진 줄은 건너뛰고, 파일을 못 열면 오류를 돌려준다.
 // 기록 형식은 Claude Code 가 문서로 내지 않은 내부 형식이라, 형식이 바뀌면 여기서 읽지 못하는 글이 생긴다.
 func UserTexts(path string, toolPrefixes []string) ([]string, error) {
@@ -94,6 +105,7 @@ func UserTexts(path string, toolPrefixes []string) ([]string, error) {
 		line, err := r.ReadBytes('\n')
 		if len(bytes.TrimSpace(line)) > 0 && mayHoldUserText(line) {
 			for _, t := range lineTexts(line, asks) {
+				t = stripPasted(t)
 				head := strings.TrimSpace(t)
 				if head == "" || hasAnyPrefix(head, systemPrefixes) || hasAnyPrefix(head, toolPrefixes) {
 					continue
@@ -110,6 +122,30 @@ func UserTexts(path string, toolPrefixes []string) ([]string, error) {
 	}
 }
 
+// stripPasted 는 글에서 붙여넣은 글 블록을 뺀다. 닫는 머리가 없으면 여는 머리부터 끝까지 뺀다.
+func stripPasted(t string) string {
+	var b strings.Builder
+	for {
+		i := strings.Index(t, pastedOpen)
+		if i < 0 {
+			b.WriteString(t)
+			return b.String()
+		}
+		b.WriteString(t[:i])
+		rest := t[i+len(pastedOpen):]
+		j := strings.Index(rest, `">`)
+		if j < 0 {
+			return b.String()
+		}
+		closing := `</pasted_content id="` + rest[:j] + `">`
+		k := strings.Index(rest, closing)
+		if k < 0 {
+			return b.String()
+		}
+		t = rest[k+len(closing):]
+	}
+}
+
 // mayHoldUserText 는 JSON 을 풀기 전에 볼 필요가 없는 줄을 거른다.
 func mayHoldUserText(line []byte) bool {
 	return bytes.Contains(line, []byte(`"user"`)) || bytes.Contains(line, []byte(`"queued_command"`)) ||
@@ -119,7 +155,7 @@ func mayHoldUserText(line []byte) bool {
 // lineTexts 는 한 줄에서 사용자가 친 글을 꺼낸다. assistant 줄이면 askTool 호출의 id 를 asks 에 더한다.
 func lineTexts(line []byte, asks map[string]bool) []string {
 	var tl transcriptLine
-	if json.Unmarshal(line, &tl) != nil || tl.IsMeta || tl.IsSidechain {
+	if json.Unmarshal(line, &tl) != nil || tl.IsMeta || tl.IsSidechain || tl.IsCompactSummary {
 		return nil
 	}
 	switch tl.Type {
@@ -139,6 +175,9 @@ func lineTexts(line []byte, asks map[string]bool) []string {
 		}
 		return nil
 	case "user":
+		if o := tl.Origin; o != nil && o.Kind != "" && o.Kind != "human" {
+			return nil
+		}
 	default:
 		return nil
 	}
