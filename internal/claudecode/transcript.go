@@ -16,13 +16,22 @@ import (
 )
 
 // 사용자가 친 글이 아닌 줄의 머리다. 도구가 만들어 사용자 글처럼 넣은 것들이다.
-// <bash-stdout>·<bash-stderr> 는 ! 명령의 출력이고, <artifact-content-authored-by-others> 는 다른 사람이 쓴 글이다.
+// <task-notification> 은 에이전트 결과 알림이다. origin 을 남기지 않는 기록에서도 막으려고 여기에도 둔다.
 // ! 로 친 명령 자체(<bash-input>)는 사용자가 친 글이라 넣지 않는다.
-var systemPrefixes = []string{"<local-command", "<command-name>", "<command-message>", "<system-reminder>",
-	"<bash-stdout", "<bash-stderr", "<artifact-content-authored-by-others"}
+var systemPrefixes = []string{"<local-command", "<system-reminder>", "<task-notification"}
 
-// pastedOpen 은 사용자가 붙여넣은 글 블록의 머리다. 블록은 <pasted_content id="…"> 로 열고 </pasted_content id="…"> 로 닫는다.
-const pastedOpen = `<pasted_content id="`
+// inlineMarkers 는 사용자가 친 글이 아닌 블록의 머리다. 글 머리에 있든 중간에 있든 그 자리부터 끝까지 뺀다.
+// <bash-stdout>·<bash-stderr> 는 ! 명령의 출력이고, <artifact-content-authored-by-others> 는 다른 사람이 쓴 글이다.
+var inlineMarkers = []string{"<bash-stdout", "<bash-stderr", "<artifact-content-authored-by-others"}
+
+// commandPrefixes 는 슬래시 명령 줄의 머리다. 명령 줄에서는 사용자가 친 인자(<command-args>)만 읽는다.
+var commandPrefixes = []string{"<command-name>", "<command-message>"}
+
+// 사용자가 붙여넣은 글 블록은 <pasted_content id="…"> 로 열고 </pasted_content id="…"> 로 닫는다.
+const (
+	pastedOpen  = `<pasted_content id="`
+	pastedClose = `</pasted_content id="`
+)
 
 // askTool 은 사용자에게 선택지를 묻는 도구의 이름이다. 그 결과에는 사용자의 답이 들어 있다.
 const askTool = "AskUserQuestion"
@@ -89,7 +98,8 @@ type askResult struct {
 //
 // 다음은 사용자가 친 글로 보지 않는다. askTool 이 아닌 도구의 tool_result 가 든 줄(AI 가 만든 출력이 들어갈 수 있다),
 // isMeta·isSidechain·isCompactSummary 가 참인 줄, origin.kind 가 human 이 아닌 user 줄(에이전트 결과 알림 등),
-// toolPrefixes 나 systemPrefixes 로 시작하는 글, 붙여넣은 글 블록(사용자가 쓴 글이 아닐 수 있다).
+// toolPrefixes 나 systemPrefixes 로 시작하는 글, inlineMarkers 부터 끝, 붙여넣은 글 블록(사용자가 쓴 글이 아닐 수 있다),
+// 슬래시 명령 줄에서 <command-args> 밖의 글. 자세한 것은 userFragments 에 있다.
 // AI 의 글("type":"assistant")은 askTool 호출의 id 를 기억하는 데만 쓴다. 깨진 줄은 건너뛰고, 파일을 못 열면 오류를 돌려준다.
 // 기록 형식은 Claude Code 가 문서로 내지 않은 내부 형식이라, 형식이 바뀌면 여기서 읽지 못하는 글이 생긴다.
 func UserTexts(path string, toolPrefixes []string) ([]string, error) {
@@ -105,12 +115,7 @@ func UserTexts(path string, toolPrefixes []string) ([]string, error) {
 		line, err := r.ReadBytes('\n')
 		if len(bytes.TrimSpace(line)) > 0 && mayHoldUserText(line) {
 			for _, t := range lineTexts(line, asks) {
-				t = stripPasted(t)
-				head := strings.TrimSpace(t)
-				if head == "" || hasAnyPrefix(head, systemPrefixes) || hasAnyPrefix(head, toolPrefixes) {
-					continue
-				}
-				out = append(out, t)
+				out = append(out, userFragments(t, toolPrefixes)...)
 			}
 		}
 		if err != nil {
@@ -122,27 +127,90 @@ func UserTexts(path string, toolPrefixes []string) ([]string, error) {
 	}
 }
 
-// stripPasted 는 글에서 붙여넣은 글 블록을 뺀다. 닫는 머리가 없으면 여는 머리부터 끝까지 뺀다.
-func stripPasted(t string) string {
-	var b strings.Builder
-	for {
-		i := strings.Index(t, pastedOpen)
-		if i < 0 {
-			b.WriteString(t)
-			return b.String()
+// userFragments 는 한 글에서 사용자가 친 조각들을 돌려준다.
+// 슬래시 명령 줄이면 <command-args> 안의 글만 읽는다. systemPrefixes·toolPrefixes 로 시작하는 글은 버린다.
+// 나머지는 inlineMarkers 부터 끝을 자르고 붙여넣은 글 블록을 뺀다. 블록 앞뒤는 이어 붙이지 않고 따로 돌려준다.
+// 이어 붙이면 사용자가 이어 친 적 없는 문장이 인용 대조에서 맞을 수 있다.
+func userFragments(t string, toolPrefixes []string) []string {
+	head := strings.TrimSpace(t)
+	if hasAnyPrefix(head, commandPrefixes) {
+		var out []string
+		for _, a := range tagContents(t, "<command-args>", "</command-args>") {
+			out = append(out, plainFragments(a)...)
 		}
-		b.WriteString(t[:i])
-		rest := t[i+len(pastedOpen):]
+		return out
+	}
+	if hasAnyPrefix(head, systemPrefixes) || hasAnyPrefix(head, toolPrefixes) {
+		return nil
+	}
+	return plainFragments(t)
+}
+
+// plainFragments 는 inlineMarkers 부터 끝을 자르고 붙여넣은 글 블록을 뺀 조각들이다. 공백뿐인 조각은 버린다.
+func plainFragments(t string) []string {
+	for _, m := range inlineMarkers {
+		if i := strings.Index(t, m); i >= 0 {
+			t = t[:i]
+		}
+	}
+	var out []string
+	for _, f := range pastedFragments(t) {
+		if strings.TrimSpace(f) != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// pastedFragments 는 붙여넣은 글 블록을 빼고 남은 조각들을 차례로 돌려준다.
+// 닫는 머리가 없으면 여는 머리부터 끝까지 뺀다. 여는 머리 없이 닫는 머리가 먼저 나오면 그 앞은
+// 다른 칸에서 시작한 블록의 뒷부분이라 닫는 머리까지 뺀다.
+func pastedFragments(t string) []string {
+	var out []string
+	for t != "" {
+		open, close := strings.Index(t, pastedOpen), strings.Index(t, pastedClose)
+		if close >= 0 && (open < 0 || close < open) {
+			j := strings.Index(t[close:], `">`)
+			if j < 0 {
+				return out
+			}
+			t = t[close+j+2:]
+			continue
+		}
+		if open < 0 {
+			return append(out, t)
+		}
+		out = append(out, t[:open])
+		rest := t[open+len(pastedOpen):]
 		j := strings.Index(rest, `">`)
 		if j < 0 {
-			return b.String()
+			return out
 		}
-		closing := `</pasted_content id="` + rest[:j] + `">`
+		closing := pastedClose + rest[:j] + `">`
 		k := strings.Index(rest, closing)
 		if k < 0 {
-			return b.String()
+			return out
 		}
 		t = rest[k+len(closing):]
+	}
+	return out
+}
+
+// tagContents 는 t 에서 open 과 close 사이의 글을 모두 돌려준다. 닫히지 않은 것은 버린다.
+func tagContents(t, open, close string) []string {
+	var out []string
+	for {
+		i := strings.Index(t, open)
+		if i < 0 {
+			return out
+		}
+		t = t[i+len(open):]
+		j := strings.Index(t, close)
+		if j < 0 {
+			return out
+		}
+		out = append(out, t[:j])
+		t = t[j+len(close):]
 	}
 }
 

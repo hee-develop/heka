@@ -87,35 +87,49 @@ func TestUserTextsExcludesGenerated(t *testing.T) {
 		msg("user", "<bash-input>cat 노트</bash-input>", nil),
 		msg("user", "<bash-stdout>AI 가 파일에 쓴 문장</bash-stdout><bash-stderr></bash-stderr>", nil),
 		msg("user", "<bash-stderr>오류</bash-stderr>", nil),
+		msg("user", "확인해줘\n<bash-stdout>중간의 명령 출력</bash-stdout>", nil),
 		msg("user", "<command-message>스킬</command-message>\n<command-name>/스킬</command-name>", nil),
+		msg("user", "<command-name>/가</command-name>\n<command-message>가</command-message>\n<command-args>명령에 친 인자</command-args>", nil),
+		msg("user", "<command-message>나</command-message>\n<command-name>/나</command-name>\n<command-args>앞 인자 <pasted_content id=\"c1\">붙인 글</pasted_content id=\"c1\"></command-args>", nil),
 		msg("user", "<artifact-content-authored-by-others>남이 쓴 글</artifact-content-authored-by-others>", nil),
 		msg("user", "에이전트 결과 본문", map[string]any{"origin": map[string]any{"kind": "task-notification"}}),
+		msg("user", "<task-notification>origin 없는 알림</task-notification>", nil),
 		msg("user", "사람의 말", map[string]any{"origin": map[string]any{"kind": "human"}}),
-		msg("user", "이것 좀 봐줘\n\n<pasted_content id=\"ab12\">\n다른 AI 의 분석\n</pasted_content id=\"ab12\">\n그리고 뒤의 말", nil),
+		msg("user", "이것 좀 봐줘\n<pasted_content id=\"ab12\">\n다른 AI 의 분석\n</pasted_content id=\"ab12\">\n그리고 뒤의 말", nil),
 		msg("user", "<pasted_content id=\"cd34\">\n붙여넣기만\n</pasted_content id=\"cd34\">", nil),
 		msg("user", "앞의 말 <pasted_content id=\"ef56\">닫히지 않은 붙여넣기", nil),
+		msg("user", []any{
+			map[string]any{"type": "text", "text": "봐줘 <pasted_content id=\"x1\">분석 앞부분"},
+			map[string]any{"type": "text", "text": "분석 뒷부분</pasted_content id=\"x1\">끝말"},
+		}, nil),
 		queued("human", "대기 말 <pasted_content id=\"gh78\">붙인 글</pasted_content id=\"gh78\">", nil),
 	)
 	got, err := UserTexts(p, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"<bash-input>cat 노트</bash-input>", "사람의 말", "이것 좀 봐줘\n\n\n그리고 뒤의 말", "앞의 말 ", "대기 말 "}
+	want := []string{"<bash-input>cat 노트</bash-input>", "확인해줘\n", "명령에 친 인자", "앞 인자 ", "사람의 말",
+		"이것 좀 봐줘\n", "\n그리고 뒤의 말", "앞의 말 ", "봐줘 ", "끝말", "대기 말 "}
 	if !slices.Equal(got, want) {
 		t.Errorf("사용자 글 = %q\n기대 %q", got, want)
 	}
 }
 
-func TestStripPasted(t *testing.T) {
-	for in, want := range map[string]string{
-		"글": "글",
-		`가<pasted_content id="1">x</pasted_content id="1">나<pasted_content id="2">y</pasted_content id="2">다`: "가나다",
-		`가<pasted_content id="1">x</pasted_content id="2">나`:                                                  "가",
-		`가<pasted_content id="1"`: "가",
-		`가<pasted_content id="1">안에 </pasted_content id="9"> 가짜 닫음</pasted_content id="1">끝`: "가끝",
+func TestPastedFragments(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want []string
+	}{
+		{"글", []string{"글"}},
+		{`가<pasted_content id="1">x</pasted_content id="1">나<pasted_content id="2">y</pasted_content id="2">다`, []string{"가", "나", "다"}},
+		{`가<pasted_content id="1">x</pasted_content id="2">나`, []string{"가"}},
+		{`가<pasted_content id="1"`, []string{"가"}},
+		{`가<pasted_content id="1">안에 </pasted_content id="9"> 가짜 닫음</pasted_content id="1">끝`, []string{"가", "끝"}},
+		{`붙인 글 뒷부분</pasted_content id="1">뒤`, []string{"뒤"}},
+		{`붙인 글 뒷부분</pasted_content id="1"`, nil},
 	} {
-		if got := stripPasted(in); got != want {
-			t.Errorf("stripPasted(%q) = %q, 기대 %q", in, got, want)
+		if got := pastedFragments(c.in); !slices.Equal(got, c.want) {
+			t.Errorf("pastedFragments(%q) = %q, 기대 %q", c.in, got, c.want)
 		}
 	}
 }
