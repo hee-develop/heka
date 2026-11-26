@@ -40,6 +40,7 @@ type State struct {
 	Pending    []Delegation        `json:"pending"`               // 기다리는 위임. 오래된 것이 앞
 	StopBlocks int                 `json:"stop_blocks,omitempty"` // 턴 종료 검사가 되돌린 횟수
 	StopStreak map[string]int      `json:"stop_streak,omitempty"` // 항목 → 직전 턴 종료까지 연속으로 되돌린 횟수
+	Calls      map[string][]string `json:"calls,omitempty"`       // 주체 → 이번 턴에 한 도구 호출 기록(`<도구>: <요약>`). 새 사용자 턴이 시작되면 비운다
 	Transcript string              `json:"transcript,omitempty"`  // 이 세션의 기록 파일 경로. 등록할 때 인용 대조에 쓴다(프롬프트 글은 남기지 않는다)
 }
 
@@ -97,8 +98,30 @@ func (s *State) Grant(action, scope string) {
 	}
 }
 
-// EndTurn 은 turn 허용을 모두 지운다.
+// 턴의 도구 호출 기록 한도다. 한 줄은 글자(룬) 수, 한 턴은 줄 수이고 넘치면 오래된 줄부터 버린다.
+const (
+	MaxCallChars = 1000
+	MaxCallLines = 64
+)
+
+// RecordCall 은 주체가 이번 턴에 한 도구 호출을 한 줄 더한다. 줄이 너무 길면 자르고, 줄이 넘치면 오래된 것부터 버린다.
+func (s *State) RecordCall(agent, line string) {
+	if r := []rune(line); len(r) > MaxCallChars {
+		line = string(r[:MaxCallChars])
+	}
+	if s.Calls == nil {
+		s.Calls = map[string][]string{}
+	}
+	c := append(s.Calls[agent], line)
+	if len(c) > MaxCallLines {
+		c = c[len(c)-MaxCallLines:]
+	}
+	s.Calls[agent] = c
+}
+
+// EndTurn 은 turn 허용과 이번 턴의 도구 호출 기록을 모두 지운다.
 func (s *State) EndTurn() {
+	s.Calls = nil
 	for a, sc := range s.Grants {
 		if sc == Turn {
 			delete(s.Grants, a)
@@ -184,6 +207,29 @@ func Load(home, id string) *State {
 		s.Grants = map[string]string{}
 	}
 	return s
+}
+
+// LoadExisting 은 Load 와 같되, 상태 파일이 없거나 읽지 못하거나 깨졌으면 ok 가 거짓이다.
+// 상태를 모른다는 것과 빈 상태를 구별해야 할 때 쓴다.
+func LoadExisting(home, id string) (s *State, ok bool) {
+	if id == "" {
+		return empty(), false
+	}
+	b, err := os.ReadFile(Path(home, id))
+	if err != nil {
+		return empty(), false
+	}
+	s = empty()
+	if json.Unmarshal(b, s) != nil {
+		return empty(), false
+	}
+	if s.Shown == nil {
+		s.Shown = map[string][]string{}
+	}
+	if s.Grants == nil {
+		s.Grants = map[string]string{}
+	}
+	return s, true
 }
 
 // Update 는 잠금을 잡고 파일을 다시 읽어 fn 으로 고친 뒤 원자적으로 쓴다.

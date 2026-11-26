@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -148,5 +149,57 @@ func TestOldPromptsFieldIsDropped(t *testing.T) {
 	b, _ := os.ReadFile(Path(home, "o"))
 	if strings.Contains(string(b), "옛 프롬프트") || strings.Contains(string(b), "prompts") {
 		t.Errorf("프롬프트가 남음: %s", b)
+	}
+}
+
+func TestRecordCallLimitsAndEndTurn(t *testing.T) {
+	s := empty()
+	s.RecordCall("", strings.Repeat("가", MaxCallChars+50))
+	if got := []rune(s.Calls[""][0]); len(got) != MaxCallChars {
+		t.Errorf("한 줄 상한: %d", len(got))
+	}
+	s.RecordCall("", strings.Repeat("a", MaxCallChars))
+	if got := s.Calls[""][1]; len(got) != MaxCallChars {
+		t.Errorf("상한 이하는 그대로: %d", len(got))
+	}
+	s = empty()
+	for i := range MaxCallLines + 10 {
+		s.RecordCall("", "Bash: "+strconv.Itoa(i))
+	}
+	c := s.Calls[""]
+	if len(c) != MaxCallLines || c[0] != "Bash: 10" || c[len(c)-1] != "Bash: "+strconv.Itoa(MaxCallLines+9) {
+		t.Errorf("오래된 것부터 버려야 함: %d줄 %q..%q", len(c), c[0], c[len(c)-1])
+	}
+	s.RecordCall("ag", "Read: /x")
+	if len(s.Calls["ag"]) != 1 || len(s.Calls[""]) != MaxCallLines {
+		t.Error("주체별로 따로 쌓아야 함")
+	}
+	s.Grant("git.push", Session)
+	s.EndTurn()
+	if len(s.Calls) != 0 || s.Grants["git.push"] != Session {
+		t.Errorf("EndTurn 은 기록만 비우고 세션 허용은 남김: %+v %+v", s.Calls, s.Grants)
+	}
+}
+
+func TestLoadExisting(t *testing.T) {
+	home := t.TempDir()
+	if _, ok := LoadExisting(home, "x"); ok {
+		t.Error("없는 파일은 ok 가 거짓")
+	}
+	if _, ok := LoadExisting(home, ""); ok {
+		t.Error("session_id 가 없으면 ok 가 거짓")
+	}
+	if err := Update(home, "x", func(s *State) { s.RecordCall("", "Bash: ls") }); err != nil {
+		t.Fatal(err)
+	}
+	s, ok := LoadExisting(home, "x")
+	if !ok || len(s.Calls[""]) != 1 {
+		t.Errorf("읽어야 함: %v %+v", ok, s.Calls)
+	}
+	if err := os.WriteFile(Path(home, "x"), []byte("{broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := LoadExisting(home, "x"); ok {
+		t.Error("깨진 파일은 ok 가 거짓")
 	}
 }
