@@ -530,6 +530,11 @@ func (h *handler) preTool(ctx context.Context) (*specific, error) {
 		out.PermissionDecisionReason = strings.Join(reasons, "\n")
 		return out, nil
 	}
+	if h.cfg.ClaudeCode.PauseFirstMust {
+		if out := h.pauseFirstMust(injs); out != nil {
+			return out, nil
+		}
+	}
 	out := contextOut("PreToolUse", injs)
 	if len(asks) > 0 {
 		if out == nil {
@@ -539,6 +544,36 @@ func (h *handler) preTool(ctx context.Context) (*specific, error) {
 		out.PermissionDecisionReason = strings.Join(asks, "\n")
 	}
 	return out, nil
+}
+
+// pausePrefix 는 처음 보인 필수 항목으로 호출을 되돌릴 때 사유의 첫 줄이다.
+const pausePrefix = "[heka 먼저 읽기] 이 호출에 걸린 필수 규칙을 이 세션에서 처음 보여 드리므로 실행 전에 한 번 멈췄습니다. 규칙에 맞는지 확인하고(필요하면 고쳐서) 같은 호출을 다시 보내면 통과합니다."
+
+// pauseFirstMust 는 이번에 처음 넣는 항목(claim 을 거친 injs) 중 필수 항목이 있으면 호출을 한 번 되돌리는 출력을 만든다.
+// 항목은 이미 "이미 넣은 항목"에 적혔으므로 다시 보낸 호출은 통과한다. 필수가 아닌 항목은 additionalContext 로 함께 보낸다.
+// 되돌릴 항목이 없으면 nil 이다.
+func (h *handler) pauseFirstMust(injs []selector.Injection) *specific {
+	var lines, paused []string
+	var rest []selector.Injection
+	for _, i := range injs {
+		if !i.Must {
+			rest = append(rest, i)
+			continue
+		}
+		paused = append(paused, i.ID)
+		lines = append(lines, "- "+i.Text+" (항목 "+i.ID+")")
+	}
+	if len(paused) == 0 {
+		return nil
+	}
+	h.row.Paused = paused
+	out := contextOut("PreToolUse", rest)
+	if out == nil {
+		out = &specific{HookEventName: "PreToolUse"}
+	}
+	out.PermissionDecision = "deny"
+	out.PermissionDecisionReason = pausePrefix + "\n" + strings.Join(lines, "\n")
+	return out
 }
 
 // toolChecks 는 도구 호출 직전의 결과물 검사다. 검사 결과를 원장 줄에 적고,

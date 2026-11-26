@@ -124,6 +124,7 @@ type Row struct {
 	Reason     string          `json:"reason,omitempty"` // retire 의 사유
 	Prompt     string          `json:"prompt,omitempty"`
 	Checks     []Checked       `json:"checks,omitempty"`         // 결과물 검사 결과
+	Paused     []string        `json:"paused,omitempty"`         // 처음 보인 필수 항목이라 호출을 한 번 되돌린 항목 id(pause_first_must)
 	Judges     []Judged        `json:"judges,omitempty"`         // 판정 명령을 부른 기록
 	Shadow     bool            `json:"shadow,omitempty"`         // 그림자 방식으로 돈 줄(아무것도 내보내지 않았다)
 	Pick       *Pick           `json:"pick,omitempty"`           // 모델이 목록에서 후보를 고른 기록

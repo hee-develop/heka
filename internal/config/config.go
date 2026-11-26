@@ -150,6 +150,7 @@ type ClaudeCode struct {
 	ToolPromptPrefixes []string  `yaml:"tool_prompt_prefixes"` // 이걸로 시작하는 프롬프트는 도구가 만든 것
 	Transcripts        []string  `yaml:"transcripts"`          // 인용을 대조할 때 더 찾아볼 세션 기록 파일의 glob 목록(** 사용 가능)
 	Shadow             bool      `yaml:"shadow"`               // 그림자 방식: 똑같이 고르고 기록하되 아무것도 내보내지 않는다(환경 변수 HEKA_SHADOW=1 과 같다)
+	PauseFirstMust     bool      `yaml:"pause_first_must"`     // 도구 호출에서 세션에 처음 보이는 필수 항목이 있으면 그 호출을 한 번 되돌려 실행 전에 읽게 한다
 }
 
 // 도구가 만든 프롬프트의 머리와 세션 허용 표현의 기본값이다.
