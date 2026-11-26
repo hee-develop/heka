@@ -33,6 +33,9 @@ claude_code:
   # transcripts: ["~/archive/sessions/**/*.jsonl"]
   # shadow: 그림자 방식. true 면 훅이 똑같이 고르고 기록하되 아무것도 내보내지 않습니다(환경 변수 HEKA_SHADOW=1 과 같음).
   # shadow: false
+  # pause_first_must: true 면 도구 호출에서 이 세션에 처음 보이는 필수(must) 항목이 있을 때 그 호출을 한 번 되돌립니다(deny).
+  # 되돌린 사유에 항목 글이 실리므로 모델이 실행 전에 읽고, 같은 호출을 다시 보내면 통과합니다. 결과물 검사(check)로 막는 것이 먼저입니다.
+  # pause_first_must: false
 
 # session_grant: 프롬프트에 이 표현이 함께 있으면 말로 한 허용이 그 턴이 아니라 세션 동안 남습니다(아래 값이 기본).
 # Go 정규식이고, 프롬프트 원문과 소문자로 바꾼 글에 대고 찾습니다.
