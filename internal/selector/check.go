@@ -20,7 +20,7 @@ type Checkable struct {
 	Check item.Check
 }
 
-// 도구 호출 직전에 검사하는 대상이다. last_message 는 턴 종료에서 검사한다.
+// 도구 호출 직전에 Bash 명령에서 뽑아 검사하는 대상이다. last_message 는 턴 종료에서, question 은 AskUserQuestion 호출 직전에 검사한다.
 var toolTargets = []string{"command", "commit_message", "pr_body"}
 
 func parseCheck(raw string) (item.Check, bool) {
@@ -53,6 +53,17 @@ func ToolChecks(ctx context.Context, ix *index.Index, cfg *config.Config, m Mome
 // StopChecks 는 턴 종료에서 검사할 항목을 모은다. check.target 이 last_message 이고
 // 범위와 자격을 통과한 항목이다. when 은 repo 와 agent 조건만 본다(action, path, moment 는 보지 않는다).
 func StopChecks(ix *index.Index, cfg *config.Config, m Moment) ([]Checkable, error) {
+	return targetChecks(ix, cfg, m, "last_message")
+}
+
+// QuestionChecks 는 AskUserQuestion 호출 직전에 검사할 항목을 모은다. check.target 이 question 이고
+// 범위와 자격을 통과한 항목이다. 이 호출은 동작 이름을 내지 않으므로(동작이 없는 도구) 동작으로 고르지 않고,
+// StopChecks 처럼 when 은 repo 와 agent 조건만 본다.
+func QuestionChecks(ix *index.Index, cfg *config.Config, m Moment) ([]Checkable, error) {
+	return targetChecks(ix, cfg, m, "question")
+}
+
+func targetChecks(ix *index.Index, cfg *config.Config, m Moment, target string) ([]Checkable, error) {
 	ids, err := ix.WithCheck()
 	if err != nil {
 		return nil, err
@@ -68,7 +79,7 @@ func StopChecks(ix *index.Index, cfg *config.Config, m Moment) ([]Checkable, err
 			continue // 방어: 조회 전용 항목에는 check 가 있을 수 없다.
 		}
 		c, ok := parseCheck(r.CheckJSON)
-		if !ok || c.Target != "last_message" {
+		if !ok || c.Target != target {
 			continue
 		}
 		if stage, _, _ := Qualify(scopes, r, m.Today); stage != "" {

@@ -31,7 +31,7 @@ func checkString(c *item.Check) string {
 	if c == nil {
 		return ""
 	}
-	return fmt.Sprintf("target=%s; pattern=%s; not_pattern=%s; mode=%s", c.Target, c.Pattern, c.NotPattern, c.Mode)
+	return fmt.Sprintf("target=%s; pattern=%s; not_pattern=%s; mode=%s; evidence=%s", c.Target, c.Pattern, c.NotPattern, c.Mode, c.Evidence)
 }
 
 func headerFields(it *item.Item) [][2]string {

@@ -64,9 +64,10 @@ scope: [repo/sample-app]
 source: user
 quote: 지어낸 말
 check:
-  target: commit_message     # command · commit_message · pr_body · last_message
+  target: commit_message     # command · commit_message · pr_body · last_message · question
   pattern: "^.{1,50}(\n|$)"  # 맞아야 하는 형식. not_pattern 은 있으면 안 되는 표현
   mode: block                # block 은 막고, log 는 기록만 한다
+  evidence: "(?i)--help"     # 선택. 이번 턴에 앞서 한 도구 호출이 이 식에 맞으면 통과시킨다
 ---
 ```
 
@@ -76,8 +77,13 @@ check:
   - 글을 뽑지 못하면 그 검사는 하지 않고(원장에 `skip` 과 이유) 통과시킵니다.
 - `mode: block` 이고 걸리면 `permissionDecision: "deny"` 로 막고, 사유에 그 항목의 글과 걸린 검사의 대상을 적어 모델이 고쳐서 다시 시도하게 합니다. 여러 항목이 걸리면 사유를 줄바꿈으로 이어 한 번에 냅니다. 같은 호출에 넣을 다른 항목은 `additionalContext` 로 함께 갑니다. 사람에게 묻지는 않습니다. `mode: log` 는 막지 않고 원장에만 남깁니다.
 - `last_message` 는 턴이 끝날 때(`Stop`) 입력의 `last_assistant_message` 를 견줍니다. 이 검사의 항목은 범위·자격을 통과해야 하고, `when` 은 `repo`·`agent` 만 봅니다. 걸리면 `{"decision": "block", "reason": …}` 로 모델이 한 번 더 돌게 합니다. 세션당 3회까지만이고, 같은 항목이 연속으로 걸리면 두 번까지만 막으며, 그 뒤에는 원장에만 남깁니다.
+- `question` 은 `AskUserQuestion` 호출 직전에 질문 글(`questions[].question` 과 `options[].label`·`options[].description` 을 줄바꿈으로 이은 글)을 견줍니다. 이 호출은 동작 이름을 내지 않으므로 `last_message` 처럼 범위·자격을 통과한 항목을 `when` 의 `repo`·`agent` 만 보고 고릅니다. `mode: block` 이면 호출을 막고 사유를 돌려줍니다.
+- `evidence`(선택, Go 정규식)는 검사가 어긋났을 때 "이번 턴에 앞서 이런 도구 호출을 했으면 통과"로 바꾸는 조건이며, 모든 대상에 `pattern`·`not_pattern` 과 함께 쓸 수 있습니다. 예를 들어 `last_message` 에 `not_pattern: "(할|쓸) 수 없|지원하지 않"` 과 `evidence: "(?i)(--help|^WebFetch:|^WebSearch:)"` 를 두면 "할 수 없다"는 단정은 같은 턴에 `--help` 나 웹 조회를 한 뒤에만 통과합니다.
+  - 증거는 훅이 모든 도구 호출 직전(`PreToolUse`)에 세션 상태에 쌓는 "턴의 도구 호출 기록"입니다. 한 줄이 `<도구 이름>: <요약>` 이고 Bash 는 명령, WebFetch 는 URL, WebSearch 는 검색어, Agent 는 `<subagent_type> <프롬프트 앞 200자>`, Skill 은 스킬 이름, Read 는 파일 경로이며 MCP 도구와 그 밖의 도구는 이름만 씁니다. 한 줄은 1000자, 한 턴은 64줄까지(넘으면 오래된 줄부터 버림)이고, 새 사용자 턴이 시작되면 비웁니다(도구가 만든 프롬프트는 같은 턴). 메인과 서브에이전트는 따로 쌓습니다.
+  - 그 호출 자신의 검사를 먼저 하고 나서 쌓으므로 호출이 자기 자신의 증거가 되지 않으며, 막힌 호출은 쌓지 않습니다. 증거로 통과하면 원장 검사 기록의 `note` 에 맞은 기록의 앞 120자가 `증거: …` 로 남습니다.
+  - 턴 기록을 읽지 못하면(`session_id` 없음, 세션 상태 파일이 없거나 깨짐) 통과시키고 `skip`(`턴 기록을 읽지 못함`)을 남깁니다.
 - 식이 틀렸거나 글을 뽑다가 오류가 나면 통과시킵니다. 검사 때문에 막는 것은 위의 두 출력뿐이고, 훅이 실패해도 작업을 막지 않는다는 원칙은 그대로입니다.
-- 원장 줄의 `checks` 에 항목 id, 대상, 결과(`pass`·`fail`·`skip`), 막았는지가 남습니다. `skip` 에는 이유 `note`(`대상 없음`, `변수를 풀지 못함`, `경로를 풀지 못함`, `같은 명령에서 파일을 고침`, `파일을 읽지 못함`, `식을 쓸 수 없음` 중 하나)가 붙고, 파일의 경로나 내용은 남기지 않습니다. `heka why` 는 이 이유를 `skip(이유)` 로 보입니다. `heka stats` 는 "검사에 걸린 횟수"를, `heka list --violated N` 은 검사에 걸린 횟수와 `flag` 횟수의 합이 N 이상인 항목을 보입니다.
+- 원장 줄의 `checks` 에 항목 id, 대상, 결과(`pass`·`fail`·`skip`), 막았는지가 남습니다. `skip` 에는 이유 `note`(`대상 없음`, `변수를 풀지 못함`, `경로를 풀지 못함`, `같은 명령에서 파일을 고침`, `파일을 읽지 못함`, `식을 쓸 수 없음`, `턴 기록을 읽지 못함` 중 하나)가 붙고, 파일의 경로나 내용은 남기지 않습니다. `heka why` 는 이 이유를 `skip(이유)` 로 보입니다. `heka stats` 는 "검사에 걸린 횟수"를, `heka list --violated N` 은 검사에 걸린 횟수와 `flag` 횟수의 합이 N 이상인 항목을 보입니다.
 
 ## 그림자 방식
 

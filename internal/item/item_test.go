@@ -108,6 +108,7 @@ func TestErrors(t *testing.T) {
 		{"check 둘 다 있음", "commit-message-language.md", sub("---\n배경", "check:\n  target: command\n  pattern: x\n  not_pattern: y\n  mode: log\n---\n배경"), "정확히 하나"},
 		{"check 둘 다 없음", "commit-message-language.md", sub("---\n배경", "check:\n  target: command\n  mode: log\n---\n배경"), "정확히 하나"},
 		{"check 정규식", "commit-message-language.md", sub("---\n배경", "check:\n  target: command\n  pattern: \"(?=x)\"\n  mode: log\n---\n배경"), "컴파일"},
+		{"check evidence 정규식", "commit-message-language.md", sub("---\n배경", "check:\n  target: last_message\n  not_pattern: x\n  evidence: \"(?=x)\"\n  mode: log\n---\n배경"), "check.evidence"},
 		{"YAML 오류", "commit-message-language.md", "---\nid: [깨짐\n---\n", "YAML 해석 실패"},
 		{"머리말 없음", "commit-message-language.md", "본문뿐\n", "머리말"},
 	}
@@ -213,5 +214,17 @@ func TestPushFalseConflicts(t *testing.T) {
 func TestPushKnownKey(t *testing.T) {
 	if ps := problems(t, "note-1.md", pushHead("push: false")); has(ps, Warn, "모르는 머리말 키") {
 		t.Errorf("push 는 아는 키여야 함: %v", ps)
+	}
+}
+
+func TestCheckEvidenceAndQuestionTarget(t *testing.T) {
+	for _, target := range []string{"command", "commit_message", "pr_body", "last_message", "question"} {
+		for _, pat := range []string{"pattern: x", "not_pattern: x"} {
+			body := strings.Replace(good, "---\n배경", "check:\n  target: "+target+"\n  "+pat+"\n  evidence: '(?i)--help'\n  mode: log\n---\n배경", 1)
+			ps := problems(t, "commit-message-language.md", body)
+			if has(ps, Error, "") || has(ps, Warn, "check.evidence") {
+				t.Errorf("%s %s evidence: 오류가 없어야 함: %v", target, pat, ps)
+			}
+		}
 	}
 }

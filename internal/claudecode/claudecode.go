@@ -17,6 +17,7 @@ import (
 	"github.com/hee-develop/heka/internal/check"
 	"github.com/hee-develop/heka/internal/config"
 	"github.com/hee-develop/heka/internal/index"
+	"github.com/hee-develop/heka/internal/item"
 	"github.com/hee-develop/heka/internal/ledger"
 	"github.com/hee-develop/heka/internal/selector"
 	"github.com/hee-develop/heka/internal/session"
@@ -83,6 +84,7 @@ type handler struct {
 	row    ledger.Row
 	shadow bool
 	top    map[string]any // hookSpecificOutput 밖의 최상위 출력(턴 종료의 block)
+	turn   *check.Turn    // 이번 턴의 도구 호출 기록. 처음 쓸 때 읽는다
 }
 
 // shadowOn 은 그림자 방식인가. 환경 변수 HEKA_SHADOW=1 이나 설정 claude_code.shadow 가 켜 둔다.
@@ -412,7 +414,147 @@ type hit struct {
 	actions []string
 }
 
+// preTool 은 도구 호출 직전의 처리다. 호출의 동작으로 고른 항목 처리(preToolActions)와 AskUserQuestion 의 질문 글 검사를 하고,
+// 그 호출 자신의 검사가 끝난 뒤에 도구 호출 기록에 한 줄을 더한다. 그래야 호출이 자기 자신의 증거가 되지 않는다.
+// 막힌 호출(deny)은 실행되지 않으므로 기록하지 않는다.
 func (h *handler) preTool(ctx context.Context) (*specific, error) {
+	out, err := h.preToolActions(ctx)
+	if err != nil {
+		h.recordCall() // 처리에 실패해도 호출은 일어나므로 기록은 남긴다
+		return nil, err
+	}
+	if h.in.ToolName == "AskUserQuestion" {
+		if reasons := h.questionChecks(ctx); len(reasons) > 0 {
+			if out == nil {
+				out = &specific{HookEventName: "PreToolUse"}
+			}
+			out.PermissionDecision = "deny"
+			if out.PermissionDecisionReason != "" {
+				reasons = append([]string{out.PermissionDecisionReason}, reasons...)
+			}
+			out.PermissionDecisionReason = strings.Join(reasons, "\n")
+		}
+	}
+	if out == nil || out.PermissionDecision != "deny" {
+		h.recordCall()
+	}
+	return out, nil
+}
+
+// recordCall 은 이 호출을 이번 턴의 도구 호출 기록에 한 줄 더한다. 세션을 모르거나 쓰지 못하면 건너뛴다(검사만 못 할 뿐 작업은 막지 않는다).
+func (h *handler) recordCall() {
+	if h.in.SessionID == "" {
+		return
+	}
+	line := callLine(h.in.ToolName, h.toolInput())
+	if line == "" {
+		return
+	}
+	_ = session.Update(h.home, h.in.SessionID, func(s *session.State) { s.RecordCall(h.in.AgentID, line) })
+}
+
+// maxAgentPromptChars 는 Agent 호출 기록에 남기는 프롬프트 앞부분의 글자 수다.
+const maxAgentPromptChars = 200
+
+// callLine 은 도구 호출을 도구 호출 기록의 한 줄(`<도구 이름>: <요약>`)로 바꾼다. 요약이 없는 도구는 이름만 쓴다.
+// Bash 는 명령, WebFetch 는 URL, WebSearch 는 검색어, Agent 는 "<subagent_type> <프롬프트 앞 200자>", Skill 은 스킬 이름, Read 는 파일 경로다.
+// MCP 도구(mcp__…)와 그 밖의 도구는 이름만 쓴다. 옛 이름 Task 는 Agent 로 적는다.
+func callLine(tool string, in map[string]any) string {
+	str := func(k string) string { s, _ := in[k].(string); return s }
+	var summary string
+	switch tool {
+	case "Bash":
+		summary = str("command")
+	case "WebFetch":
+		summary = str("url")
+	case "WebSearch":
+		summary = str("query")
+	case "Agent", "Task":
+		tool = "Agent"
+		kind := str("subagent_type")
+		if kind == "" {
+			kind = defaultAgent
+		}
+		p := str("prompt")
+		if rs := []rune(p); len(rs) > maxAgentPromptChars {
+			p = string(rs[:maxAgentPromptChars])
+		}
+		summary = strings.TrimSpace(kind + " " + p)
+	case "Skill":
+		if summary = str("skill"); summary == "" {
+			summary = str("name")
+		}
+	case "Read":
+		summary = str("file_path")
+	}
+	if tool == "" {
+		return ""
+	}
+	if summary == "" {
+		return tool
+	}
+	return tool + ": " + summary
+}
+
+// turnLog 는 이번 턴에 이 주체가 앞서 한 도구 호출 기록이다. 처음 쓸 때 한 번 읽는다.
+// 세션을 모르거나 상태 파일이 없거나 깨졌으면 OK 가 거짓이다.
+func (h *handler) turnLog() check.Turn {
+	if h.turn == nil {
+		s, ok := session.LoadExisting(h.home, h.in.SessionID)
+		h.turn = &check.Turn{Calls: slices.Clone(s.Calls[h.in.AgentID]), OK: ok}
+	}
+	return *h.turn
+}
+
+// eval 은 검사 하나를 글들에 적용한다. evidence 가 있는 검사만 턴 기록을 읽는다.
+func (h *handler) eval(c item.Check, texts []string) (result, why, note string) {
+	if c.Evidence == "" {
+		result, why = check.Eval(c, texts)
+		return result, why, ""
+	}
+	if r, _ := check.Eval(c, texts); r != check.Fail {
+		return check.EvalEvidence(c, texts, check.Turn{})
+	}
+	return check.EvalEvidence(c, texts, h.turnLog())
+}
+
+// questionChecks 는 AskUserQuestion 호출 직전의 질문 글 검사다. 원장 줄에 결과를 적고 막아야 하는 항목의 사유를 돌려준다.
+// 오류는 검사만 건너뛰고 통과시킨다.
+func (h *handler) questionChecks(ctx context.Context) (reasons []string) {
+	defer func() {
+		if r := recover(); r != nil {
+			reasons = nil
+		}
+	}()
+	text := check.QuestionText(h.toolInput())
+	m := h.moment("tool")
+	m.Agent = h.in.agentKind()
+	if err := h.openIndex(); err != nil {
+		return nil
+	}
+	cands, err := selector.QuestionChecks(h.ix, h.cfg, m)
+	if err != nil || len(cands) == 0 || ctx.Err() != nil {
+		return nil
+	}
+	var texts []string
+	if text != "" {
+		texts = []string{text}
+	}
+	for _, c := range cands {
+		result, why, note := h.eval(c.Check, texts)
+		if result == check.Skip {
+			note = why
+		}
+		blocked := result == check.Fail && c.Check.Mode == "block"
+		h.row.Checks = append(h.row.Checks, ledger.Checked{ID: c.ID, Target: c.Check.Target, Result: result, Blocked: blocked, Note: note})
+		if blocked {
+			reasons = append(reasons, check.Line(c.ID, c.Text, why))
+		}
+	}
+	return reasons
+}
+
+func (h *handler) preToolActions(ctx context.Context) (*specific, error) {
 	in := h.in
 	ti := h.toolInput()
 	r := action.Resolve(action.Call{Tool: in.ToolName, Input: ti, Cwd: in.Cwd}, h.cfg)
@@ -585,9 +727,8 @@ func (h *handler) toolChecks(ctx context.Context, actions, paths []string) (deni
 	home, _ := os.UserHomeDir()
 	targets, notes := check.Extract(h.in.ToolName, h.toolInput(), shell.Files{Cwd: h.in.Cwd, Home: home, Read: check.ReadFile})
 	for _, c := range cands {
-		result, why := check.Eval(c.Check, targets[c.Check.Target])
+		result, why, note := h.eval(c.Check, targets[c.Check.Target])
 		blocked := result == check.Fail && c.Check.Mode == "block"
-		note := ""
 		if result == check.Skip {
 			note = why
 			if n := notes[c.Check.Target]; n != "" && len(targets[c.Check.Target]) == 0 {
@@ -630,8 +771,7 @@ func (h *handler) stop(ctx context.Context) error {
 		if h.in.LastAssistantMessage != "" {
 			texts = []string{h.in.LastAssistantMessage}
 		}
-		result, why := check.Eval(c.Check, texts)
-		note := ""
+		result, why, note := h.eval(c.Check, texts)
 		if result == check.Skip {
 			note = why
 		}

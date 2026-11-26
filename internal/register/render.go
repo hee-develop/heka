@@ -61,7 +61,7 @@ func render(in Input) []byte {
 	}
 	if c := in.Check; c != nil {
 		b.WriteString("check:\n")
-		for _, kv := range [][2]string{{"target", c.Target}, {"pattern", c.Pattern}, {"not_pattern", c.NotPattern}, {"mode", c.Mode}} {
+		for _, kv := range [][2]string{{"target", c.Target}, {"pattern", c.Pattern}, {"not_pattern", c.NotPattern}, {"mode", c.Mode}, {"evidence", c.Evidence}} {
 			if kv[1] != "" {
 				b.WriteString("  " + kv[0] + ": " + scalar(kv[1], false) + "\n")
 			}
