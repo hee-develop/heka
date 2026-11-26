@@ -91,6 +91,8 @@ type Check struct {
 	Pattern    string `yaml:"pattern" json:"pattern,omitempty"`
 	NotPattern string `yaml:"not_pattern" json:"not_pattern,omitempty"`
 	Mode       string `yaml:"mode" json:"mode,omitempty"`
+	// Evidence 는 있으면, 검사가 Fail 일 때 이번 턴에 앞서 한 도구 호출 기록 중 하나라도 이 식에 맞으면 Pass 로 바꾸는 식이다.
+	Evidence string `yaml:"evidence" json:"evidence,omitempty"`
 }
 
 // Item 은 항목 파일 하나다.
@@ -140,9 +142,9 @@ var (
 	idRe      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 	known     = map[string]bool{"id": true, "text": true, "must": true, "when": true, "about": true, "scope": true, "source": true, "quote": true, "checked": true, "expires": true, "confirm": true, "check": true, "push": true}
 	knownWhen = map[string]bool{"moment": true, "action": true, "path": true, "repo": true, "agent": true}
-	knownChk  = map[string]bool{"target": true, "pattern": true, "not_pattern": true, "mode": true}
+	knownChk  = map[string]bool{"target": true, "pattern": true, "not_pattern": true, "mode": true, "evidence": true}
 	moments   = map[string]bool{"session_start": true, "prompt": true, "tool": true, "subagent_start": true}
-	targets   = map[string]bool{"command": true, "commit_message": true, "pr_body": true, "last_message": true}
+	targets   = map[string]bool{"command": true, "commit_message": true, "pr_body": true, "last_message": true, "question": true}
 )
 
 // Parse 는 항목 파일 하나를 읽는다. 읽을 수는 있으나 틀린 내용은 Problems 에 담긴다.
@@ -263,7 +265,7 @@ func (it *Item) validate(m *yaml.Node, add func(level, format string, a ...any))
 func (it *Item) validateCheck(add func(level, format string, a ...any)) {
 	c := it.Check
 	if !targets[c.Target] {
-		add(Error, "check.target 은 command|commit_message|pr_body|last_message 중 하나여야 함: %q", c.Target)
+		add(Error, "check.target 은 command|commit_message|pr_body|last_message|question 중 하나여야 함: %q", c.Target)
 	}
 	if c.Mode != "block" && c.Mode != "log" {
 		add(Error, "check.mode 는 block|log 중 하나여야 함: %q", c.Mode)
@@ -271,7 +273,7 @@ func (it *Item) validateCheck(add func(level, format string, a ...any)) {
 	if (c.Pattern == "") == (c.NotPattern == "") {
 		add(Error, "check 에는 pattern 과 not_pattern 중 정확히 하나가 있어야 함")
 	}
-	for name, p := range map[string]string{"pattern": c.Pattern, "not_pattern": c.NotPattern} {
+	for name, p := range map[string]string{"pattern": c.Pattern, "not_pattern": c.NotPattern, "evidence": c.Evidence} {
 		if p == "" {
 			continue
 		}
