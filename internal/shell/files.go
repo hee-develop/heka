@@ -4,11 +4,12 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
 
-// 이 파일은 파일로 넘긴 커밋 메시지·PR 본문(`git commit -F 경로`, `gh pr create --body-file 경로`)을 푼다.
+// 이 파일은 파일로 넘긴 커밋 메시지·PR 본문·리뷰 본문(`git commit -F 경로`, `gh pr create --body-file 경로`)을 푼다.
 // 경로 단어를 같은 명령 안의 앞선 대입과 cd 로 풀고, 같은 명령이 그 파일을 만들면 그 heredoc 본문을,
 // 그렇지 않으면 주입받은 읽기 함수로 파일을 읽는다. 어떤 명령도 실행하지 않는다.
 // 훅이 도는 시점의 파일 내용이 실제로 쓰일 내용과 달라질 수 있는 경우는 풀지 않고 건너뛴다.
@@ -23,6 +24,7 @@ const (
 	NoteBadPath    = "경로를 풀지 못함"
 	NoteTouched    = "같은 명령에서 파일을 고침"
 	NoteUnreadable = "파일을 읽지 못함"
+	NoteBadJSON    = "JSON 으로 읽지 못함"
 )
 
 // Files 는 경로를 풀고 파일을 읽는 데 필요한 바깥 사정이다.
@@ -217,7 +219,7 @@ type fileOperand struct {
 	dirs []string
 }
 
-// fileOperands 는 구간이 git commit·gh pr create|edit·gh api 로 파일에서 글을 읽을 때 그 경로 단어들이다.
+// fileOperands 는 구간이 git commit·gh pr create|edit|review|comment·gh api 로 파일에서 글을 읽을 때 그 경로 단어들이다.
 func fileOperands(seg Segment) []fileOperand {
 	ws := StripPrefix(seg.Words)
 	off := len(seg.Words) - len(ws)
@@ -229,11 +231,16 @@ func fileOperands(seg Segment) []fileOperand {
 			return nil
 		}
 		parts, dirs, base = commitParts(rest), GitDirs(ws), len(ws)-len(rest)
-	} else if len(ws) >= 3 && path.Base(ws[0]) == "gh" && ws[1] == "pr" && (ws[2] == "create" || ws[2] == "edit") {
+	} else if len(ws) >= 3 && path.Base(ws[0]) == "gh" && ws[1] == "pr" && slices.Contains([]string{"create", "edit", "review", "comment"}, ws[2]) {
 		parts, base = prParts(ws[3:]), 3
 	} else if len(ws) >= 2 && path.Base(ws[0]) == "gh" && ws[1] == "api" {
 		if p, ok := ghAPIBody(ws[2:]); ok {
 			parts = []part{p}
+		}
+		c := parseGHAPI(ws[2:])
+		parts = append(parts, c.reviewParts()...)
+		if c.Kind != "" && c.input != nil {
+			parts = append(parts, *c.input)
 		}
 		base = 2
 	}

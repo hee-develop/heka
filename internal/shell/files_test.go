@@ -55,9 +55,12 @@ func runFileCases(t *testing.T, kind string, cases []fileCase) {
 			e := newFilesEnv(t, c.files)
 			cmd := e.sub(c.cmd)
 			var got Extracted
-			if kind == "commit" {
+			switch kind {
+			case "commit":
 				got = CommitMessagesIn(cmd, e.files())
-			} else {
+			case "review":
+				got = ReviewBodiesIn(cmd, e.files())
+			default:
 				got = PRBodiesIn(cmd, e.files())
 			}
 			want := make([]string, len(c.want))
@@ -216,6 +219,28 @@ func TestPRBodyFromFile(t *testing.T) {
 		{"gh api 없는 파일", nil, `gh api repos/o/r/pulls -F body=@@D/none.md`, nil, NoteUnreadable},
 		{"gh api 이슈 댓글은 대상 아님", body, `gh api repos/o/r/issues/1/comments -F body=@@D/b.md`, nil, NoteNoTarget},
 		{"gh api stdin", nil, "gh api repos/o/r/pulls -F body=@- <<'EOF'\n본문\nEOF", []string{"본문"}, ""},
+	})
+}
+
+func TestReviewBodyFromFile(t *testing.T) {
+	body := map[string]string{"b.md": "from Claude: 파일 본문\n"}
+	want := []string{"from Claude: 파일 본문"}
+	review := map[string]string{"r.json": `{"body": "총평", "event": "COMMENT", "comments": [{"path": "a.go", "body": "c1"}, {"path": "b.go", "body": "c2"}]}` + "\n"}
+	runFileCases(t, "review", []fileCase{
+		{"gh pr comment --body-file", body, `gh pr comment 3 --body-file @D/b.md`, want, ""},
+		{"gh pr review -F 상대 경로", body, `cd @D && gh pr review 3 --request-changes -F b.md`, want, ""},
+		{"cat heredoc 으로 쓰고 읽음", nil, "cat > @D/b.md <<'EOF'\nfrom Claude: 파일 본문\nEOF\ngh pr comment 3 --body-file @D/b.md", want, ""},
+		{"앞선 코멘트가 읽기만 한다", body, `gh pr comment 3 --body-file @D/b.md && gh pr comment 4 --body-file @D/b.md`, []string{want[0], want[0]}, ""},
+		{"없는 파일", nil, `gh pr comment 3 --body-file @D/none.md`, nil, NoteUnreadable},
+		{"gh api -F body=@파일", body, `gh api repos/o/r/pulls/1/comments/2/replies -F body=@@D/b.md`, want, ""},
+		{"--input 파일", review, `gh api -X POST repos/o/r/pulls/1/reviews --input @D/r.json`, []string{"총평", "c1", "c2"}, ""},
+		{"--input= 파일", review, `gh api repos/o/r/pulls/1/reviews --input=@D/r.json`, []string{"총평", "c1", "c2"}, ""},
+		{"--input 파일 APPROVE 본문 없음", map[string]string{"r.json": `{"event": "APPROVE"}`}, `gh api repos/o/r/pulls/1/reviews --input @D/r.json`, []string{""}, ""},
+		{"--input 없는 파일", nil, `gh api repos/o/r/pulls/1/reviews --input @D/none.json`, nil, NoteUnreadable},
+		{"--input JSON 이 아닌 파일", body, `gh api repos/o/r/pulls/1/reviews --input @D/b.md`, nil, NoteBadJSON},
+		{"--input - 파이프", nil, `jq -n '{body: "x"}' | gh api repos/o/r/pulls/1/comments --input -`, nil, NoteNoTarget},
+		{"본문 없는 --approve", nil, `gh pr review 3 --approve`, []string{""}, ""},
+		{"대상 아님", nil, `gh api repos/o/r/pulls/1/comments`, nil, NoteNoTarget},
 	})
 }
 

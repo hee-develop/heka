@@ -31,6 +31,7 @@ const (
 	actPRMerge       = "pr.merge"
 	actPRReview      = "pr.review"
 	actPREdit        = "pr.edit"
+	actPRComment     = "pr.comment"
 	actTestRun       = "test.run"
 	actFSDestructive = "fs.destructive"
 	// 구글 문서 도구와 MCP
@@ -60,6 +61,7 @@ var emitted = []string{
 	actPRMerge,
 	actPRReview,
 	actPREdit,
+	actPRComment,
 	actTestRun,
 	actFSDestructive,
 	actGwsRead,

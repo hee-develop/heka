@@ -77,3 +77,57 @@ func TestPRBodies(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewBodies(t *testing.T) {
+	cases := []struct {
+		name, cmd string
+		want      []string
+	}{
+		{"gh pr review --body", `gh pr review 3 --comment --body "from Claude: 확인"`, []string{"from Claude: 확인"}},
+		{"gh pr comment -b", `gh pr comment 3 -b "from Claude: x"`, []string{"from Claude: x"}},
+		{"gh pr comment --body=", `gh pr comment 3 --body=x`, []string{"x"}},
+		{"--body-file - heredoc", "gh pr comment 3 --body-file - <<'EOF'\nfrom Claude: 여러 줄\n본문\nEOF", []string{"from Claude: 여러 줄\n본문"}},
+		{"heredoc 치환", "gh pr review 3 -r -b \"$(cat <<'EOF'\nfrom Claude: \"q\" (p)\nEOF\n)\"", []string{"from Claude: \"q\" (p)"}},
+		{"--body-file 파일", `gh pr comment 3 --body-file b.md`, nil},
+		{"앞뒤 공백은 그대로", `gh pr comment 3 --body "  x  "`, []string{"  x  "}},
+		{"본문 없는 --approve", `gh pr review 3 --approve`, []string{""}},
+		{"본문 없는 -a", `gh pr review -a`, []string{""}},
+		{"--approve 와 본문", `gh pr review 3 --approve --body x`, []string{"x"}},
+		{"본문 없는 --comment", `gh pr review 3 --comment`, nil},
+		{"gh pr comment 에 --approve 는 뜻이 없음", `gh pr comment 3 --approve`, nil},
+		{"gh pr view 는 대상 아님", `gh pr view 3 --comments`, nil},
+		{"gh pr create 는 대상 아님", `gh pr create --body x`, nil},
+
+		// gh api
+		{"리뷰 -f body", `gh api -X POST repos/o/r/pulls/1/reviews -f body=x -f event=COMMENT`, []string{"x"}},
+		{"인라인 코멘트", `gh api repos/o/r/pulls/1/comments -f body='from Claude: y' -f path=a.go -F line=3`, []string{"from Claude: y"}},
+		{"답글", `gh api -X POST repos/o/r/pulls/1/comments/2/replies -f body='x'`, []string{"x"}},
+		{"코멘트 수정", `gh api -X PATCH /repos/o/r/pulls/comments/5 --raw-field body=고침`, []string{"고침"}},
+		{"대화 코멘트", `gh api repos/o/r/issues/1/comments -F body=z`, []string{"z"}},
+		{"대화 코멘트 수정", `gh api --method PATCH repos/o/r/issues/comments/5 -f body=z`, []string{"z"}},
+		{"리뷰 본문 수정", `gh api -X PUT repos/o/r/pulls/1/reviews/9 -f body=z`, []string{"z"}},
+		{"comments[][body] 필드", `gh api repos/o/r/pulls/1/reviews -f event=COMMENT -f 'comments[][path]=a.go' -f 'comments[][body]=a' -f 'comments[][path]=b.go' -f 'comments[][body]=b'`, []string{"a", "b"}},
+		{"-F body=@- heredoc", "gh api repos/o/r/pulls/1/comments/2/replies -F body=@- <<'EOF'\n답\nEOF", []string{"답"}},
+		{"--input - heredoc JSON", "gh api -X POST repos/o/r/pulls/1/reviews --input - <<'EOF'\n{\"body\": \"총평\", \"event\": \"COMMENT\", \"comments\": [{\"path\": \"a.go\", \"line\": 1, \"body\": \"c1\"}, {\"path\": \"b.go\", \"line\": 2, \"body\": \"c2\"}]}\nEOF", []string{"총평", "c1", "c2"}},
+		{"--input JSON 의 빈 body 는 뺌", "gh api repos/o/r/pulls/1/reviews --input - <<'EOF'\n{\"body\": \"\", \"event\": \"COMMENT\", \"comments\": [{\"body\": \"c\"}]}\nEOF", []string{"c"}},
+		{"--input JSON 이 아님", "gh api repos/o/r/pulls/1/reviews --input - <<'EOF'\nbody=x\nEOF", nil},
+		{"--input 파일", `gh api repos/o/r/pulls/1/reviews --input r.json`, nil},
+		{"event=APPROVE 필드에 본문 없음", `gh api repos/o/r/pulls/1/reviews -f event=APPROVE`, []string{""}},
+		{"제출 호출의 APPROVE", `gh api repos/o/r/pulls/1/reviews/9/events -f event=approve`, []string{""}},
+		{"event=APPROVE 와 본문", `gh api repos/o/r/pulls/1/reviews -f event=APPROVE -f body=ok`, []string{"ok"}},
+		{"event=APPROVE JSON 에 본문 없음", "gh api repos/o/r/pulls/1/reviews --input - <<'EOF'\n{\"event\": \"APPROVE\"}\nEOF", []string{""}},
+		{"리뷰 본문 수정에는 승인이 없음", `gh api -X PUT repos/o/r/pulls/1/reviews/9 -f event=APPROVE`, nil},
+		{"event=COMMENT 에 본문 없음", `gh api repos/o/r/pulls/1/reviews -f event=COMMENT`, nil},
+		{"파이프 표준 입력", `jq -n '{body: "x"}' | gh api repos/o/r/pulls/1/comments --input -`, nil},
+		{"GET 은 대상 아님", `gh api repos/o/r/pulls/1/comments --jq '.[].body'`, nil},
+		{"-X GET 은 대상 아님", `gh api repos/o/r/pulls/1/comments -X GET -f body=x`, nil},
+		{"DELETE 는 대상 아님", `gh api -X DELETE repos/o/r/pulls/comments/5`, nil},
+		{"PR 본문 수정은 대상 아님", `gh api -X PATCH repos/o/r/pulls/1 -f body=x`, nil},
+		{"답글 둘", `gh api repos/o/r/pulls/1/comments/2/replies -f body=a; gh api repos/o/r/pulls/1/comments/3/replies -f body=b`, []string{"a", "b"}},
+	}
+	for _, c := range cases {
+		if got := ReviewBodies(c.cmd); !reflect.DeepEqual(got, c.want) && !(len(got) == 0 && len(c.want) == 0) {
+			t.Errorf("%s: %q → %q, 기대 %q", c.name, c.cmd, got, c.want)
+		}
+	}
+}

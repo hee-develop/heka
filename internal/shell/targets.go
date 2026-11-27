@@ -1,13 +1,15 @@
 package shell
 
 import (
+	"encoding/json"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
 
-// 이 파일은 결과물 검사의 대상 글을 Bash 명령에서 뽑는다: 커밋 메시지와 PR 본문.
+// 이 파일은 결과물 검사의 대상 글을 Bash 명령에서 뽑는다: 커밋 메시지, PR 본문, PR 리뷰·코멘트 본문.
 // 파일로 넘긴 글(-F <파일>, --body-file <파일>)은 files.go 의 규칙대로 풀어서 읽고,
 // 풀 수 없거나 글이 없는 경우는 대상에서 뺀다.
 
@@ -175,23 +177,12 @@ func CommitMessagesIn(cmd string, f Files) Extracted {
 		var msgs []string
 		skip := ""
 		for _, p := range commitParts(rest) {
-			switch p.kind {
-			case partText:
-				msgs = append(msgs, p.val)
-			case partStdin:
-				if len(seg.Heredocs) == 0 {
-					skip = firstNote(skip, NoteNoTarget)
-					continue
-				}
-				msgs = append(msgs, seg.Heredocs[0])
-			case partFile:
-				text, note := fileText(segs, k, p.val, GitDirs(ws), f)
-				if note != "" {
-					skip = firstNote(skip, note)
-					continue
-				}
-				msgs = append(msgs, text)
+			text, note := readPart(segs, k, p, GitDirs(ws), f)
+			if note != "" {
+				skip = firstNote(skip, note)
+				continue
 			}
+			msgs = append(msgs, text)
 		}
 		if skip != "" {
 			res.skip(skip)
@@ -234,23 +225,12 @@ func PRBodiesIn(cmd string, f Files) Extracted {
 		var bodies []string
 		skip := ""
 		for _, p := range parts {
-			switch p.kind {
-			case partText:
-				bodies = append(bodies, p.val)
-			case partStdin:
-				if len(seg.Heredocs) == 0 {
-					skip = firstNote(skip, NoteNoTarget)
-					continue
-				}
-				bodies = append(bodies, seg.Heredocs[0])
-			case partFile:
-				text, note := fileText(segs, k, p.val, nil, f)
-				if note != "" {
-					skip = firstNote(skip, note)
-					continue
-				}
-				bodies = append(bodies, text)
+			text, note := readPart(segs, k, p, nil, f)
+			if note != "" {
+				skip = firstNote(skip, note)
+				continue
 			}
+			bodies = append(bodies, text)
 		}
 		if skip != "" {
 			res.skip(skip)
@@ -264,7 +244,113 @@ func PRBodiesIn(cmd string, f Files) Extracted {
 	return res.done()
 }
 
-// prParts 는 gh pr create·edit 의 인자(args)에서 본문이 되는 글을 나온 순서대로 돌려준다.
+// ReviewBodies 는 ReviewBodiesIn 을 파일을 읽지 않고 부른 결과다.
+func ReviewBodies(cmd string) []string {
+	return ReviewBodiesIn(cmd, Files{}).Texts
+}
+
+// ReviewBodiesIn 은 PR 리뷰·코멘트의 본문을 하나씩 글로 돌려준다.
+// gh pr review·comment 는 --body·-b 값과 --body-file·-F 가 가리키는 글이고,
+// gh api 리뷰·코멘트 호출(GHAPI 의 Kind)은 body·comments[][body] 필드와 --input JSON 의 body·comments[].body 다.
+// 본문 없이 승인하는 호출(gh pr review --approve, event=APPROVE 인 리뷰 호출)은 빈 글 하나를 낸다.
+// 한 구간에서 풀 수 없는 것이 하나라도 있으면 그 구간은 뺀다.
+func ReviewBodiesIn(cmd string, f Files) Extracted {
+	segs := maskedSegments(cmd)
+	var res Extracted
+	for k, seg := range segs {
+		ws := StripPrefix(seg.Words)
+		if len(ws) < 2 || path.Base(ws[0]) != "gh" {
+			continue
+		}
+		var parts []part
+		var input *part
+		approve, approvable := false, false
+		switch {
+		case len(ws) >= 3 && ws[1] == "pr" && (ws[2] == "review" || ws[2] == "comment"):
+			parts = prParts(ws[3:])
+			approvable = ws[2] == "review"
+			approve = approvable && (slices.Contains(ws[3:], "--approve") || slices.Contains(ws[3:], "-a"))
+		case ws[1] == "api":
+			c := parseGHAPI(ws[2:])
+			if c.Kind == "" {
+				continue
+			}
+			parts, input = c.reviewParts(), c.input
+			approvable, approve = c.approvable, c.approves()
+		default:
+			continue
+		}
+		var bodies []string
+		skip := ""
+		for _, p := range parts {
+			text, note := readPart(segs, k, p, nil, f)
+			if note != "" {
+				skip = firstNote(skip, note)
+				continue
+			}
+			bodies = append(bodies, text)
+		}
+		if input != nil {
+			text, note := readPart(segs, k, *input, nil, f)
+			if note == "" {
+				var got []string
+				var approved bool
+				got, approved, note = reviewJSON(text)
+				bodies = append(bodies, got...)
+				approve = approve || (approvable && approved)
+			}
+			skip = firstNote(skip, note)
+		}
+		if skip != "" {
+			res.skip(skip)
+			continue
+		}
+		if len(bodies) == 0 && approve {
+			bodies = []string{""}
+		}
+		res.Texts = append(res.Texts, bodies...)
+	}
+	return res.done()
+}
+
+// reviewJSON 은 리뷰·코멘트 요청 JSON 에서 최상위 body(비어 있지 않은 문자열)와 comments[].body 를 꺼내고,
+// event 가 APPROVE 인지 알려 준다. JSON 이 아니면 note 에 이유가 있다.
+func reviewJSON(text string) (bodies []string, approve bool, note string) {
+	var v any
+	if err := json.Unmarshal([]byte(text), &v); err != nil {
+		return nil, false, NoteBadJSON
+	}
+	m, _ := v.(map[string]any)
+	if b, ok := m["body"].(string); ok && b != "" {
+		bodies = append(bodies, b)
+	}
+	cs, _ := m["comments"].([]any)
+	for _, c := range cs {
+		cm, _ := c.(map[string]any)
+		if b, ok := cm["body"].(string); ok {
+			bodies = append(bodies, b)
+		}
+	}
+	e, _ := m["event"].(string)
+	return bodies, strings.EqualFold(e, "APPROVE"), ""
+}
+
+// readPart 는 인자 하나가 가리키는 글이다. 표준 입력은 구간의 첫 heredoc 이고, 파일은 fileText 로 푼다.
+// dirs 는 그 구간의 `git -C` 값이다. 글을 얻지 못하면 note 에 이유가 있다.
+func readPart(segs []Segment, k int, p part, dirs []string, f Files) (text, note string) {
+	switch p.kind {
+	case partStdin:
+		if len(segs[k].Heredocs) == 0 {
+			return "", NoteNoTarget
+		}
+		return segs[k].Heredocs[0], ""
+	case partFile:
+		return fileText(segs, k, p.val, dirs, f)
+	}
+	return p.val, ""
+}
+
+// prParts 는 gh pr create·edit·review·comment 의 인자(args)에서 본문이 되는 글을 나온 순서대로 돌려준다.
 func prParts(args []string) []part {
 	var out []part
 	for i := 0; i < len(args); i++ {
@@ -292,87 +378,20 @@ func prParts(args []string) []part {
 }
 
 // ghAPIBody 는 gh api 호출이 PR 을 만들거나 고치면(pulls 로 끝나는 경로의 POST, pulls/<번호> 의 PATCH)
-// body 필드가 가리키는 글을 돌려준다. args 는 "api" 뒤의 단어다.
-// 값이 `@` 로 시작하는 것은 -F·--field(typed field)일 때만 파일(`@-` 는 표준 입력)이고,
-// -f·--raw-field 는 글자 그대로의 문자열이다(gh 의 규칙).
+// body 필드가 가리키는 글을 돌려준다. args 는 "api" 뒤의 단어다. body 가 여럿이면 마지막 것이다.
 func ghAPIBody(args []string) (part, bool) {
-	valueOpts := map[string]bool{"-H": true, "--header": true, "-q": true, "--jq": true, "-t": true, "--template": true, "--hostname": true, "--cache": true, "-p": true, "--preview": true, "--input": true}
-	fieldOpts := map[string]bool{"-f": true, "-F": true, "--field": true, "--raw-field": true}
-	var endpoint, method string
+	c := parseGHAPI(args)
 	var body part
-	hasField, hasBody := false, false
-	field := func(kv string, typed bool, at int) {
-		hasField = true
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok || k != "body" {
-			return
-		}
-		hasBody = true
-		switch {
-		case typed && v == "@-":
-			body = part{kind: partStdin, at: at}
-		case typed && strings.HasPrefix(v, "@"):
-			body = part{kind: partFile, val: v[1:], at: at}
-		default:
-			body = part{kind: partText, val: v, at: at}
-		}
-	}
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		next := func() string {
-			if i+1 < len(args) {
-				i++
-				return args[i]
-			}
-			return ""
-		}
-		switch {
-		case a == "-X" || a == "--method":
-			method = next()
-		case strings.HasPrefix(a, "--method="):
-			method = strings.TrimPrefix(a, "--method=")
-		case strings.HasPrefix(a, "-X") && !strings.HasPrefix(a, "--"):
-			method = strings.TrimPrefix(a, "-X")
-		case fieldOpts[a]:
-			typed := a == "-F" || a == "--field"
-			at := i + 1
-			field(next(), typed, at)
-		case strings.HasPrefix(a, "--field=") || strings.HasPrefix(a, "--raw-field="):
-			_, v, _ := strings.Cut(a, "=")
-			field(v, strings.HasPrefix(a, "--field="), i)
-		case len(a) > 2 && (strings.HasPrefix(a, "-f") || strings.HasPrefix(a, "-F")) && !strings.HasPrefix(a, "--"):
-			field(a[2:], a[1] == 'F', i)
-		case a == "--input":
-			hasField = true
-			next()
-		case valueOpts[a]:
-			next()
-		case strings.HasPrefix(a, "-"):
-		case endpoint == "":
-			endpoint = a
+	hasBody := false
+	for _, f := range c.fields {
+		if f.key == "body" {
+			body, hasBody = f.val, true
 		}
 	}
 	if !hasBody {
 		return part{}, false
 	}
-	if i := strings.IndexAny(endpoint, "?#"); i >= 0 {
-		endpoint = endpoint[:i]
-	}
-	segs := strings.FieldsFunc(endpoint, func(r rune) bool { return r == '/' })
-	method = strings.ToUpper(method)
-	if method == "" && hasField {
-		method = "POST"
-	}
-	isPR := false
-	if len(segs) > 0 && segs[len(segs)-1] == "pulls" && method == "POST" {
-		isPR = true
-	}
-	for i := 0; i+1 < len(segs); i++ {
-		if segs[i] == "pulls" && isDigits(segs[i+1]) && method == "PATCH" {
-			isPR = true
-		}
-	}
-	return body, isPR
+	return body, c.prWrite()
 }
 
 func isDigits(s string) bool {
