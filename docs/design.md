@@ -197,7 +197,7 @@ confirm: false
 
 확인을 요구하는 항목은 되돌릴 수 없는 파괴적 동작에만 둔다(2026-11-15 결정). 푸시나 PR 만들기처럼 자동화의 중간 단계가 되는 동작에는 걸지 않는다. 사람이 자리에 없는 동안 확인 요청 하나가 뒤의 단계를 모두 멈추기 때문이다.
 
-**동작 이름.** 도구 호출은 동작 이름으로 바뀐다. 코드가 내는 이름은 `git.commit`, `git.push`, `git.push.force`, `git.destructive`, `code.edit`, `doc.edit`, `agent.delegate`, `skill.run` 등이고, 도구 이름이나 스킬 이름으로만 알 수 있는 동작은 설정의 `tool_actions`로 잇는다. PR은 `pr.create`와 `pr.edit`(`gh pr create`·`gh pr edit`, `gh api`로 PR을 만들거나 고치는 호출)로 나뉘고, 예시 설정은 둘의 상위 동작 `pr.write`를 둔다. PR 본문에 관한 규칙은 `pr.write`에 걸면 둘 다 걸린다.
+**동작 이름.** 도구 호출은 동작 이름으로 바뀐다. 코드가 내는 이름은 `git.commit`, `git.push`, `git.push.force`, `git.destructive`, `code.edit`, `doc.edit`, `agent.delegate`, `skill.run` 등이고, 도구 이름이나 스킬 이름으로만 알 수 있는 동작은 설정의 `tool_actions`로 잇는다. PR은 `pr.create`와 `pr.edit`(`gh pr create`·`gh pr edit`, `gh api`로 PR을 만들거나 고치는 호출)로 나뉘고, 예시 설정은 둘의 상위 동작 `pr.write`를 둔다. PR 본문에 관한 규칙은 `pr.write`에 걸면 둘 다 걸린다. 리뷰는 `pr.review`(`gh pr review`, `gh api`로 리뷰를 만들거나 제출하거나 리뷰 본문을 고치는 호출: `pulls/<번호>/reviews` POST, `pulls/<번호>/reviews/<번호>/events` POST, `pulls/<번호>/reviews/<번호>` PUT)이고, 코멘트는 `pr.comment`(`gh pr comment`, `gh api`로 인라인 코멘트·답글·대화 코멘트를 올리거나 고치는 호출: `pulls/<번호>/comments` POST, `pulls/<번호>/comments/<번호>/replies` POST, `pulls/comments/<번호>` PATCH, `issues/<번호>/comments` POST, `issues/comments/<번호>` PATCH)다. `gh api` 엔드포인트는 끝부분 경로로 판정한다. PR 대화 코멘트는 이슈 코멘트와 같은 엔드포인트라 이슈에 단 코멘트도 `pr.comment`가 된다. GET·DELETE와 `gh api graphql`은 동작을 내지 않는다.
 
 **동작 낱말 사전.** 프롬프트가 어떤 동작을 시키는지는 동작별 표현을 적은 사전 하나로 알아챈다("푸시해 줘" → `git.push`). 사전은 두 곳에 쓰인다(2026-11-13 결정).
 
@@ -216,14 +216,15 @@ confirm: false
 
 ```yaml
 check:
-  target: commit_message     # command · commit_message · pr_body · last_message
+  target: commit_message     # command · commit_message · pr_body · review_body · last_message
   pattern: "^.{1,50}(\n|$)"  # 맞아야 하는 형식. not_pattern 은 있으면 안 되는 표현
   mode: block                # block 은 막고, log 는 기록만 한다
 ```
 
-- 명령, 커밋 메시지, PR 본문은 도구 호출 직전에 Bash 명령에서 뽑아 검사한다. 검사할 항목은 그 호출의 동작과 `when`이 맞고 범위·자격을 통과한 것이다.
+- 명령, 커밋 메시지, PR 본문, 리뷰·코멘트 본문은 도구 호출 직전에 Bash 명령에서 뽑아 검사한다. 검사할 항목은 그 호출의 동작과 `when`이 맞고 범위·자격을 통과한 것이다.
   - 커밋 메시지: `git commit`의 `-m`(여럿이면 빈 줄로 잇는다), `-F -`와 heredoc, `--amend -m`.
   - PR 본문: `gh pr create`·`gh pr edit`의 `--body`·`-b`, `--body-file -`와 heredoc, `gh api`로 PR을 만들거나 고치는 호출의 `-f body=…`.
+  - 리뷰·코멘트 본문(`review_body`): 본문 하나가 글 하나이고, 한 명령에 여럿이면 모두 형식에 맞아야 통과한다. `gh pr review`·`gh pr comment`의 `--body`·`-b`, `--body-file`·`-F`(`-`는 heredoc), `gh api` 리뷰·코멘트 호출(위 `pr.review`·`pr.comment`의 엔드포인트)의 `body` 필드와 `comments[][body]` 필드, `--input <파일>`·`--input -`(heredoc)로 넘긴 JSON의 최상위 `body`(비어 있지 않은 것)와 `comments[].body`. JSON이 아니거나 파이프로 받은 표준 입력이면 검사하지 않는다. 본문 없이 승인하는 호출(`gh pr review --approve`, `event=APPROVE`인 리뷰 만들기·제출)은 빈 글 하나로 검사해, 승인에도 본문을 요구하는 규칙을 `pattern`으로 걸 수 있게 한다. 승인이 아닌 호출에 본문이 없으면 검사하지 않는다. 본문 앞뒤 공백은 다듬지 않는다.
   - 파일로 넘겨서 뽑을 수 없는 경우(`-F <파일>`, `--body-file <파일>`)와 본문이 없는 경우는 검사하지 않고 통과시킨다. 원장에는 `skip`으로 남긴다.
 - `mode: block`에 걸리면 호출을 막고 사유(그 항목의 글과 걸린 검사의 대상)를 모델에게 돌려준다. 모델이 고쳐서 다시 시도한다. 여러 항목이 걸리면 사유를 한 번에 낸다. `mode: log`는 막지 않고 원장에만 남긴다.
 - 마지막 응답은 턴이 끝날 때 검사한다. 걸리면 모델을 한 번 더 돌게 하되 세션당 3회까지만 하고, 같은 항목이 연속으로 걸리면 2번까지만 막는다. 한도를 넘으면 원장에만 남긴다. 이 검사의 항목은 범위·자격을 통과해야 하고 `when`은 `repo`·`agent`만 본다.
