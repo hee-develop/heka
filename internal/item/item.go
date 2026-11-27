@@ -142,7 +142,7 @@ var (
 	knownWhen = map[string]bool{"moment": true, "action": true, "path": true, "repo": true, "agent": true}
 	knownChk  = map[string]bool{"target": true, "pattern": true, "not_pattern": true, "mode": true}
 	moments   = map[string]bool{"session_start": true, "prompt": true, "tool": true, "subagent_start": true}
-	targets   = map[string]bool{"command": true, "commit_message": true, "pr_body": true, "last_message": true}
+	targets   = map[string]bool{"command": true, "commit_message": true, "pr_body": true, "review_body": true, "last_message": true}
 )
 
 // Parse 는 항목 파일 하나를 읽는다. 읽을 수는 있으나 틀린 내용은 Problems 에 담긴다.
@@ -263,7 +263,7 @@ func (it *Item) validate(m *yaml.Node, add func(level, format string, a ...any))
 func (it *Item) validateCheck(add func(level, format string, a ...any)) {
 	c := it.Check
 	if !targets[c.Target] {
-		add(Error, "check.target 은 command|commit_message|pr_body|last_message 중 하나여야 함: %q", c.Target)
+		add(Error, "check.target 은 command|commit_message|pr_body|review_body|last_message 중 하나여야 함: %q", c.Target)
 	}
 	if c.Mode != "block" && c.Mode != "log" {
 		add(Error, "check.mode 는 block|log 중 하나여야 함: %q", c.Mode)

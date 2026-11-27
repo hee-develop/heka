@@ -32,6 +32,8 @@ func Label(target string) string {
 		return "커밋 메시지"
 	case "pr_body":
 		return "PR 본문"
+	case "review_body":
+		return "리뷰·코멘트 본문"
 	case "last_message":
 		return "마지막 응답"
 	}
@@ -45,8 +47,9 @@ func Targets(tool string, input map[string]any) map[string][]string {
 	return texts
 }
 
-// Extract 는 Targets 와 같되, 파일로 넘긴 커밋 메시지·PR 본문을 f 의 규칙으로 풀어서 읽는다.
-// 글을 뽑지 못한 대상(키가 없는 대상)이 커밋 메시지나 PR 본문이면 notes 에 그 이유(shell.Note…)가 있다.
+// Extract 는 Targets 와 같되, 파일로 넘긴 커밋 메시지·PR 본문·리뷰 본문을 f 의 규칙으로 풀어서 읽는다.
+// 글을 뽑지 못한 대상(키가 없는 대상)이 커밋 메시지, PR 본문, 리뷰·코멘트 본문이면 notes 에 그 이유(shell.Note…)가 있다.
+// 리뷰·코멘트 본문에는 본문 없는 승인을 뜻하는 빈 글이 있을 수 있다.
 func Extract(tool string, input map[string]any, f shell.Files) (texts map[string][]string, notes map[string]string) {
 	texts, notes = map[string][]string{}, map[string]string{}
 	if tool != "Bash" {
@@ -60,6 +63,7 @@ func Extract(tool string, input map[string]any, f shell.Files) (texts map[string
 	for target, e := range map[string]shell.Extracted{
 		"commit_message": shell.CommitMessagesIn(cmd, f),
 		"pr_body":        shell.PRBodiesIn(cmd, f),
+		"review_body":    shell.ReviewBodiesIn(cmd, f),
 	} {
 		if len(e.Texts) > 0 {
 			texts[target] = e.Texts

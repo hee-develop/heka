@@ -68,7 +68,7 @@ func TestExtractFromFile(t *testing.T) {
 	}
 	f := shell.Files{Cwd: dir, Read: ReadFile}
 	texts, notes := Extract("Bash", map[string]any{"command": `git commit -F m.txt`}, f)
-	if texts["commit_message"][0] != "파일 제목" || len(notes) != 1 || notes["pr_body"] != shell.NoteNoTarget {
+	if texts["commit_message"][0] != "파일 제목" || len(notes) != 2 || notes["pr_body"] != shell.NoteNoTarget || notes["review_body"] != shell.NoteNoTarget {
 		t.Errorf("Extract = %v, %v", texts, notes)
 	}
 	texts, notes = Extract("Bash", map[string]any{"command": `git commit -F none.txt && gh pr edit 1 --body-file $X`}, f)
@@ -77,6 +77,40 @@ func TestExtractFromFile(t *testing.T) {
 	}
 	if _, notes := Extract("Write", nil, f); len(notes) != 0 {
 		t.Errorf("Bash 가 아니면 이유도 없음: %v", notes)
+	}
+}
+
+// 리뷰·코멘트 본문은 글마다 판정하고, 본문 없는 승인의 빈 글도 판정한다.
+func TestReviewBodyCheck(t *testing.T) {
+	c := item.Check{Target: "review_body", Pattern: "^\\s*(`p[1-5]`\\s+)?from Claude: ", Mode: "block"}
+	eval := func(cmd string) string {
+		texts, _ := Extract("Bash", map[string]any{"command": cmd}, shell.Files{})
+		got, _ := Eval(c, texts["review_body"])
+		return got
+	}
+	cases := []struct {
+		name, cmd, want string
+	}{
+		{"맞는 본문", `gh pr comment 3 --body "from Claude: LGTM"`, Pass},
+		{"우선순위 표시", "gh api repos/o/r/pulls/1/comments/2/replies -f body='`p3` from Claude: 고쳐 주세요'", Pass},
+		{"앞에 없음", `gh pr review 3 --comment --body "LGTM"`, Fail},
+		{"끝에 붙음", `gh pr comment 3 --body "확인했습니다 from Claude:"`, Fail},
+		{"본문 없는 승인", `gh pr review 3 --approve`, Fail},
+		{"둘 중 하나만 맞음", `gh api repos/o/r/pulls/1/comments/2/replies -f body='from Claude: a' && gh api repos/o/r/pulls/1/comments/3/replies -f body=b`, Fail},
+		{"둘 다 맞음", `gh api repos/o/r/pulls/1/comments/2/replies -f body='from Claude: a' && gh pr comment 1 -b 'from Claude: b'`, Pass},
+		{"본문 없는 코멘트 리뷰는 판정하지 않음", `gh pr review 3 --comment`, Skip},
+	}
+	for _, tc := range cases {
+		if got := eval(tc.cmd); got != tc.want {
+			t.Errorf("%s: %s, 기대 %s", tc.name, got, tc.want)
+		}
+	}
+	if r, _ := Eval(c, []string{""}); r != Fail {
+		t.Errorf("빈 글도 판정해야 함: %s", r)
+	}
+	_, why := Eval(c, []string{"LGTM"})
+	if !strings.Contains(why, "리뷰·코멘트 본문") {
+		t.Errorf("이유 = %q", why)
 	}
 }
 

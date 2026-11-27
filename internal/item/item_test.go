@@ -121,6 +121,20 @@ func TestErrors(t *testing.T) {
 	}
 }
 
+// 도구 호출 직전에 검사하는 대상과 턴 종료의 대상을 모두 받는다.
+func TestCheckTargets(t *testing.T) {
+	for _, target := range []string{"command", "commit_message", "pr_body", "review_body", "last_message"} {
+		b := strings.Replace(good, "---\n배경", "check:\n  target: "+target+"\n  pattern: \"^from Claude: \"\n  mode: block\n---\n배경", 1)
+		if ps := problems(t, "commit-message-language.md", b); len(ps) != 0 {
+			t.Errorf("%s: 문제가 없어야 함: %v", target, ps)
+		}
+	}
+	b := strings.Replace(good, "---\n배경", "check:\n  target: reviews\n  pattern: x\n  mode: block\n---\n배경", 1)
+	if ps := problems(t, "commit-message-language.md", b); !has(ps, Error, "review_body") {
+		t.Errorf("오류 문구에 review_body 가 있어야 함: %v", ps)
+	}
+}
+
 func TestWarnings(t *testing.T) {
 	ps := problems(t, "commit-message-language.md", strings.Replace(good, "confirm: false", "confirm: false\nextra: 1", 1))
 	if !has(ps, Warn, "모르는 머리말 키: extra") || has(ps, Error, "") {
