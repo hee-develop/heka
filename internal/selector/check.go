@@ -21,7 +21,7 @@ type Checkable struct {
 }
 
 // 도구 호출 직전에 검사하는 대상이다. last_message 는 턴 종료에서 검사한다.
-var toolTargets = []string{"command", "commit_message", "pr_body"}
+var toolTargets = []string{"command", "commit_message", "pr_body", "review_body"}
 
 func parseCheck(raw string) (item.Check, bool) {
 	var c item.Check

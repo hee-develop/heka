@@ -39,7 +39,7 @@ var tools = []tool{
 			"quote":   str("source 가 user 일 때 근거가 되는 사용자의 말"),
 			"expires": str("유효기한 YYYY-MM-DD"),
 			"confirm": str("false|true|always"),
-			"check": obj(map[string]any{"target": str("command|commit_message|pr_body|last_message"), "pattern": str("정규식"),
+			"check": obj(map[string]any{"target": str("command|commit_message|pr_body|review_body|last_message"), "pattern": str("정규식"),
 				"not_pattern": str("정규식"), "mode": str("block|log")}),
 			"body": str("배경과 예시. 조회할 때만 읽힌다"),
 		}, "id", "text", "about", "scope", "source")},
